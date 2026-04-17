@@ -1,0 +1,6 @@
+telethon
+pymongo[srv]
+flask
+dnspython
+Pillow
+pytz
