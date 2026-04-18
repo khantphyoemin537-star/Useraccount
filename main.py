@@ -29,7 +29,7 @@ API_ID = 30765851
 API_HASH = '235b0bc6f03767302dc75763508f7b75'
 OWNER_ID = 6015356597
 MONGO_URI = "mongodb+srv://khantphyoemin537_db_user:9VRKiaeZkz7rJdpz@cluster0.w6tgi8j.mongodb.net/?appName=Cluster0&tlsAllowInvalidCertificates=true"
-SESSION_STR = "1BVtsOKEBu16EIhQUXghjELGgsrRuoCO7I6zfWzbjZfOPhXekopXekO4NdLynd2tWlX-syuXr4v4ilR2PTNXdj-jv0RJQSVQWwKGmH46E8wB22xPbUeDsroei1H1Rx75W_GFTev-jrZlTeCUe7JlLNKKiU24JLEnQfPzDBWMVI9iSmFW3SkssJyvYVyk6nwJrMzae_YsCwm5igewvv8BWer73oPBBMJqA5CXGpAdq_51q_MOXrmoWlJ6eVQslyIpohhdmRQfXEZWiYxxLZ8SAtDMPPYnlW8UqtDfkWQeOq6GlNaefvHoaGtgCLt6wCfPJQ4lGYXUDfArZ4KXb-cb_kSqKxs8ExSo="
+SESSION_STR = ""
 
 # ==========================================
 # 🗄️ DATABASE SETUP
@@ -91,7 +91,7 @@ async def stop_bully(event):
     await event.respond(bq_format("အခုနားဆိုလို့နားလိုက်မယ်၊စောက်ချိုးမပြေရင်ထပ်ဆဲပေးမယ်"))
 
 # [3] /bq, /delete, /undelete commands (ဒါတွေက prefix ပါမြဲပါပဲ)
-@bot_client.on(events.NewMessage(outgoing=True))
+@client.on(events.NewMessage(outgoing=True))
 async def auto_animate_bq(event):
     # Command တွေ (ဥပမာ /id, /gid) ဆိုရင် Animation မလုပ်အောင် skip မယ်
     if event.text.startswith('/') or event.text.startswith('.'):
@@ -116,7 +116,7 @@ async def auto_animate_bq(event):
             await event.edit(animated_text, parse_mode='html')
             
             # Animation မြန်နှုန်း (0.1 စက္ကန့်)
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.5)
             
     except Exception as e:
         # Error တက်ရင် (ဥပမာ စာတိုလွန်းရင်) နောက်ဆုံးစာသားကိုပဲ တန်းပြမယ်
