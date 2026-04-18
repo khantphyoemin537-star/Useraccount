@@ -29,7 +29,7 @@ API_ID = 30765851
 API_HASH = '235b0bc6f03767302dc75763508f7b75'
 OWNER_ID = 6015356597
 MONGO_URI = "mongodb+srv://khantphyoemin537_db_user:9VRKiaeZkz7rJdpz@cluster0.w6tgi8j.mongodb.net/?appName=Cluster0&tlsAllowInvalidCertificates=true"
-SESSION_STR = "1BVtsOIMBuxnALGP-xLBQFz0RM77UZBXrhJBw8pZ9sQxh2kUBvhBJlts0UpLXLmrmeesJ8808LV52LRXudyirN1ZPDAi2IRBaw1_Um8bXB_7X-hZfKnnUzhlBPoyjNrvS2Z3vdNirK85-KqE-haLsqymUSGdTDShKBYTr87n3_XItxcqr34lu4Vz2Bq2wXIpltDeAYXOPf7YwFmI3C0NDhlMIeOJIFzwBEAMQe7oeFXTsmZOg-hMEGW2-50HJA73zw1yVP52ehyEj4mCWFDtUTJJ5LS0pBIftpW8sQBHzYYWuMJ1tJV2KPeBEHAJblGCcZPzw8NR9BwbY2p2JwdxDnApu8uPl_eQ="
+SESSION_STR = "1BVtsOKEBu16EIhQUXghjELGgsrRuoCO7I6zfWzbjZfOPhXekopXekO4NdLynd2tWlX-syuXr4v4ilR2PTNXdj-jv0RJQSVQWwKGmH46E8wB22xPbUeDsroei1H1Rx75W_GFTev-jrZlTeCUe7JlLNKKiU24JLEnQfPzDBWMVI9iSmFW3SkssJyvYVyk6nwJrMzae_YsCwm5igewvv8BWer73oPBBMJqA5CXGpAdq_51q_MOXrmoWlJ6eVQslyIpohhdmRQfXEZWiYxxLZ8SAtDMPPYnlW8UqtDfkWQeOq6GlNaefvHoaGtgCLt6wCfPJQ4lGYXUDfArZ4KXb-cb_kSqKxs8ExSo="
 
 # ==========================================
 # 🗄️ DATABASE SETUP
@@ -91,12 +91,37 @@ async def stop_bully(event):
     await event.respond(bq_format("အခုနားဆိုလို့နားလိုက်မယ်၊စောက်ချိုးမပြေရင်ထပ်ဆဲပေးမယ်"))
 
 # [3] /bq, /delete, /undelete commands (ဒါတွေက prefix ပါမြဲပါပဲ)
-@client.on(events.NewMessage(pattern=r'^/bq\s+(.*)'))
-async def bq_cmd(event):
-    if not is_allowed(event.sender_id): return
-    await event.delete()
-    await event.respond(bq_format(event.pattern_match.group(1)), parse_mode='html')
+@bot_client.on(events.NewMessage(outgoing=True))
+async def auto_animate_bq(event):
+    # Command တွေ (ဥပမာ /id, /gid) ဆိုရင် Animation မလုပ်အောင် skip မယ်
+    if event.text.startswith('/') or event.text.startswith('.'):
+        return
 
+    original_text = event.text
+    full_msg = ""
+    
+    # စာသားကို တစ်လုံးချင်းစီ ခွဲထုတ်ပြီး animation လုပ်မယ်
+    # ဥပမာ - "ဟိုင်း" -> "ဟ", "ဟို", "ဟိုင်", "ဟိုင်း"
+    frames = []
+    for i in range(1, len(original_text) + 1):
+        frames.append(original_text[:i])
+
+    # Animation စတင်မယ်
+    try:
+        for frame in frames:
+            # Blockquote format ထဲကို ထည့်တယ်
+            animated_text = f"<blockquote><b>{escape_html(frame)}</b></blockquote>"
+            
+            # စာသားကို edit လုပ်ပြီး animation ပြမယ်
+            await event.edit(animated_text, parse_mode='html')
+            
+            # Animation မြန်နှုန်း (0.1 စက္ကန့်)
+            await asyncio.sleep(0.3)
+            
+    except Exception as e:
+        # Error တက်ရင် (ဥပမာ စာတိုလွန်းရင်) နောက်ဆုံးစာသားကိုပဲ တန်းပြမယ်
+        final_text = f"<blockquote><b>{escape_html(original_text)}</b></blockquote>"
+        await event.edit(final_text, parse_mode='html')
 @client.on(events.NewMessage(pattern=r'^/delete'))
 async def del_cmd(event):
     if not is_allowed(event.sender_id): return
