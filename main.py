@@ -6,7 +6,6 @@ import threading
 from flask import Flask
 from pymongo import MongoClient
 from telethon import TelegramClient, events
-from telethon.sessions import StringSession
 from html import escape as escape_html
 
 # ==========================================
@@ -14,7 +13,7 @@ from html import escape as escape_html
 # ==========================================
 app = Flask('')
 @app.route('/')
-def home(): return "Userbot Sovereign Active!"
+def home(): return "BoDx Guard System Active!"
 
 def run_flask(): 
     port = int(os.environ.get('PORT', 10000))
@@ -25,11 +24,17 @@ logging.basicConfig(level=logging.ERROR)
 # ==========================================
 # ⚙️ CONFIGURATION
 # ==========================================
-API_ID = 30765851
-API_HASH = '235b0bc6f03767302dc75763508f7b75'
 OWNER_ID = 6015356597
 MONGO_URI = "mongodb+srv://khantphyoemin537_db_user:9VRKiaeZkz7rJdpz@cluster0.w6tgi8j.mongodb.net/?appName=Cluster0&tlsAllowInvalidCertificates=true"
-SESSION_STR = "1BVtsOIMBuwxSp3_DqkToXgpN2UqO6uXq_hlN-5weoKD4vennMk5olaJQ53CGogL6qHLHTacNN4uKtDBN-Q8k54obMjsQnU9NxChM19YJtmNdIjuNIvgJoV7_ZpY3n10IYMVTHfJYEYCGB0qr4DGgB_OpxIx6RT430TWJuH3oOKq7GGjrJl3v1TLICPZRPA_ue93BH39_HIiKd-vess58xp2u3xB53gozMnqxGK53CTJnYEqhP8OGEuXi43SA_JKKxJGZvq2jG_4ioM31acyb2BGUYEGwycl6Pejjtajt6zfKarC2ob6Dtp6a2QXEYh3XrbBq-ikuDHIHf--oItBMmXYvap7tiIA="
+APP_ID = 30765851
+APP_HASH = '235b0bc6f03767302dc75763508f7b75'
+
+TOKENS = [
+    "7857238353:AAEkDQnXqxyvXOQufwJwzZ7tXlwrmzM6XyI",
+    "8565944163:AAE5tew3A1a6GkOw69vMPYSgV2obyO-wPz4",
+    "8704927120:AAFUIrQhFaly9yRkEhsD4Yu5FiIEfj1F7Oo",
+    "7716597590:AAF4uR9g-cOBLssQcPfqe2ROIxnr3dd-PDQ"
+]
 
 # ==========================================
 # 🗄️ DATABASE SETUP
@@ -39,135 +44,118 @@ db = client_mongo["telegram_bot"]
 filters_col = db["filters"] 
 allow_col = db["allowed_users"]
 
-client = TelegramClient(StringSession(SESSION_STR), API_ID, API_HASH)
+bots = [TelegramClient(f'session_bot_{i}', APP_ID, APP_HASH) for i in range(len(TOKENS))]
+main_bot = bots[0]
 
-bully_tasks = {}
-auto_delete_users = {}
-
-def bq_format(text): 
-    safe_text = escape_html(str(text))
-    return f"<blockquote><b>{safe_text}</b></blockquote>"
+shoot_tasks = {} 
+bot_ids = []
 
 def is_allowed(user_id):
     if user_id == OWNER_ID: return True
     return allow_col.find_one({"user_id": user_id}) is not None
 
 # ==========================================
-# 🛡️ CUSTOM COMMANDS (NO PREFIX)
+# 🎯 PROTECTION & ALERT LOGIC
 # ==========================================
 
-# [1] "သေမယ်နော်" - Bully Start
-@client.on(events.NewMessage(pattern=r'^သေမယ်နော်$'))
-async def userbot_bully(event):
-    if not is_allowed(event.sender_id): return
+# --- [Watcher] Owner Protection & Intruder Warning ---
+@main_bot.on(events.NewMessage())
+async def protector_watcher(event):
+    if event.is_private or not event.text: return
+    if event.sender_id in bot_ids: return
+
+    # 1. Owner ကို စော်ကားသူ/Reply ထောက်သူအား ကာကွယ်ခြင်း
     reply = await event.get_reply_message()
-    if not reply: return 
-    
-    try: await event.delete()
-    except: pass
-
-    chat_id = event.chat_id
-    t = await reply.get_sender()
-    if not t or t.id == OWNER_ID: return
-
-    bully_tasks[chat_id] = True
-    mention = f"<a href='tg://user?id={t.id}'>{escape_html(t.first_name)}</a>"
-    words = [w.get("text") for w in filters_col.find() if w.get("text")]
-    if not words: words = ["စောက်ရူး", "ခွေးကောင်"]
-
-    while bully_tasks.get(chat_id):
-        try: 
-            await client.send_message(chat_id, f"{mention} {bq_format(random.choice(words))}", reply_to=reply.id, parse_mode='html')
-            await asyncio.sleep(0.2) 
-        except: break
-
-# [2] "ဆက်ကိုက်" - Stop Bully (ရပ်လိုက်မယ်)
-@client.on(events.NewMessage(pattern=r'^ဆက်ကိုက်$'))
-async def stop_bully(event):
-    if not is_allowed(event.sender_id): return
-    try: await event.delete()
-    except: pass
-    bully_tasks[event.chat_id] = False
-    await event.respond(bq_format("အခုနားဆိုလို့နားလိုက်မယ်၊စောက်ချိုးမပြေရင်ထပ်ဆဲပေးမယ်"))
-
-# [3] /bq, /delete, /undelete commands (ဒါတွေက prefix ပါမြဲပါပဲ)
-@client.on(events.NewMessage(outgoing=True))
-async def auto_animate_bq(event):
-    # Command တွေ (ဥပမာ /id, /gid) ဆိုရင် Animation မလုပ်အောင် skip မယ်
-    if event.text.startswith('/') or event.text.startswith('.'):
+    if reply and reply.sender_id == OWNER_ID and event.sender_id != OWNER_ID:
+        # Owner ကို Reply ထောက်ရင် Bot တွေက ဝိုင်းဆော်မည်
+        words = [w.get("text") for w in filters_col.find() if w.get("text")]
+        attack_word = random.choice(words) if words else "ငါတို့ရဲ့ Creator ကို မင်းက ဘာမှတ်နေလဲ ခွေးမသား!"
+        for bot in bots:
+            try:
+                await bot.send_message(event.chat_id, f"မင်းက ငါတို့ Creator ကို လာစမ်းတာလား? {attack_word}", reply_to=event.id)
+                await asyncio.sleep(0.3)
+            except: pass
         return
 
-    original_text = event.text
-    full_msg = ""
+    # 2. Allow user မဟုတ်သူ Cmd လာသုံးရင် သတိပေးခြင်း
+    cmds = ["ချိန်ထား", "ပစ်သတ်", "အပစ်ရပ်"]
+    if any(event.text.startswith(c) for c in cmds):
+        if not is_allowed(event.sender_id):
+            intruder = await event.get_sender()
+            name = escape_html(intruder.first_name)
+            warning = f"ဖာသည်မသား {name}... မင်းက ဘာကောင်မို့လို့ ငါတို့စီမှာ အမိန့်လာပေးနေတာလဲ? မင်းကိုပါ ငါတို့ 4 ယောက် ပစ်သတ်ဖို့ အသင့်ချိန်ထားလိုက်ပြီ။"
+            for bot in bots:
+                try:
+                    await bot.send_message(event.chat_id, warning, reply_to=event.id)
+                except: pass
+            return
+
+# ==========================================
+# 🔫 COMMANDS (For Owner & Allowed Users)
+# ==========================================
+
+@main_bot.on(events.NewMessage(pattern=r'^ချိန်ထား$'))
+async def aim_target(event):
+    if not is_allowed(event.sender_id): return
+    reply = await event.get_reply_message()
+    if not reply: return
+
+    sender = await event.get_sender()
+    name = escape_html(sender.first_name)
     
-    # စာသားကို တစ်လုံးချင်းစီ ခွဲထုတ်ပြီး animation လုပ်မယ်
-    # ဥပမာ - "ဟိုင်း" -> "ဟ", "ဟို", "ဟိုင်", "ဟိုင်း"
-    frames = []
-    for i in range(1, len(original_text) + 1):
-        frames.append(original_text[:i])
+    if event.sender_id == OWNER_ID:
+        msg = f"<a href='tg://user?id={event.sender_id}'>{name}</a> ရဲ့ အမိန့်ပေးမှုအရ ဒီကောင့်ကို ပစ်သတ်ဖို့ အသင့်ချိန်ထားပါပြီ။"
+    else:
+        msg = f"ဗိုလ်ကြီး <a href='tg://user?id={event.sender_id}'>{name}</a> ရဲ့ အမိန့်ပေးမှုအရ ဒီကောင့်ကို ပစ်သတ်ဖို့ အသင့်ချိန်ထားပြီ ။"
 
-    # Animation စတင်မယ်
-    try:
-        for frame in frames:
-            # Blockquote format ထဲကို ထည့်တယ်
-            animated_text = f"<blockquote><b>{escape_html(frame)}</b></blockquote>"
-            
-            # စာသားကို edit လုပ်ပြီး animation ပြမယ်
-            await event.edit(animated_text, parse_mode='html')
-            
-            # Animation မြန်နှုန်း (0.1 စက္ကန့်)
-            await asyncio.sleep(0.5)
-            
-    except Exception as e:
-        # Error တက်ရင် (ဥပမာ စာတိုလွန်းရင်) နောက်ဆုံးစာသားကိုပဲ တန်းပြမယ်
-        final_text = f"<blockquote><b>{escape_html(original_text)}</b></blockquote>"
-        await event.edit(final_text, parse_mode='html')
-@client.on(events.NewMessage(pattern=r'^/delete'))
-async def del_cmd(event):
+    tasks = [bot.send_message(event.chat_id, msg, reply_to=reply.id, parse_mode='html') for bot in bots]
+    await asyncio.gather(*tasks)
+
+@main_bot.on(events.NewMessage(pattern=r'^ပစ်သတ်$'))
+async def fire_target(event):
     if not is_allowed(event.sender_id): return
     reply = await event.get_reply_message()
-    if reply:
-        chat_id = event.chat_id
-        if chat_id not in auto_delete_users: auto_delete_users[chat_id] = []
-        auto_delete_users[chat_id].append(reply.sender_id)
-        await event.respond(bq_format("သူ့စာတွေကို လိုက်ဖျက်ပါမယ်။"))
+    if not reply: return
 
-@client.on(events.NewMessage(pattern=r'^/undelete'))
-async def undel_cmd(event):
-    if not is_allowed(event.sender_id): return
-    reply = await event.get_reply_message()
-    if reply and event.chat_id in auto_delete_users:
-        if reply.sender_id in auto_delete_users[event.chat_id]:
-            auto_delete_users[event.chat_id].remove(reply.sender_id)
-            await event.respond(bq_format("စာဖျက်တာ ရပ်လိုက်ပါပြီ။"))
-
-# [4] Auto Deletion Watcher
-@client.on(events.NewMessage())
-async def watcher(event):
     chat_id = event.chat_id
-    if chat_id in auto_delete_users and event.sender_id in auto_delete_users[chat_id]:
-        await asyncio.sleep(3)
+    shoot_tasks[chat_id] = True 
+    sender = await event.get_sender()
+    name = escape_html(sender.first_name)
+    authority = f"<a href='tg://user?id={event.sender_id}'>{name}</a> အာဏာအရ ဒီကောင့်ကို အ​သေပစ်သတ်ပြီ"
+
+    words = [w.get("text") for w in filters_col.find() if w.get("text")]
+    if not words: words = []
+
+    bot_index = 0
+    while shoot_tasks.get(chat_id):
         try:
-            u = await event.get_sender()
-            is_bot = u.bot if u else False
-            await event.delete()
-            if is_bot:
-                t = "Botစာတွေဖျက်ပြီ ငါ့စာလည်း 5sec နေရင်ပျက်ပြီ"
-                n = await event.respond(f"{t}\n⏱ 5")
-                for i in range(4, 0, -1):
-                    await asyncio.sleep(1); await n.edit(f"{t}\n⏱ {i}")
-                await asyncio.sleep(1); await n.delete()
-        except: pass
+            current_bot = bots[bot_index % len(bots)]
+            attack_msg = f"{authority}\n\n{random.choice(words)}"
+            await current_bot.send_message(chat_id, attack_msg, reply_to=reply.id, parse_mode='html')
+            bot_index += 1
+            await asyncio.sleep(0.4) 
+        except:
+            break
+
+@main_bot.on(events.NewMessage(pattern=r'^အပစ်ရပ်$'))
+async def stop_fire(event):
+    if not is_allowed(event.sender_id): return
+    chat_id = event.chat_id
+    if chat_id in shoot_tasks:
+        shoot_tasks[chat_id] = False
+        await event.reply("ငါတို့ 4 ယောက် ဒီခွေးမသားကို အ​သေသတ်ပေးထားတယ်။ပြန်ရှင်သန်ခွင့် မပေးဘူး")
 
 # ==========================================
-# 🚀 RUN
+# 🚀 START SYSTEM
 # ==========================================
-async def main():
+async def start_system():
     threading.Thread(target=run_flask, daemon=True).start()
-    await client.start()
-    print("✅ Userbot Active: Commands changed to 'သေမယ်နော်' and 'ဆက်ကိုက်'")
-    await client.run_until_disconnected()
+    for i, bot in enumerate(bots):
+        await bot.start(bot_token=TOKENS[i])
+        me = await bot.get_me()
+        bot_ids.append(me.id)
+    print("✅ BoDx Guard & Firing Squad System Online!")
+    await asyncio.gather(*(bot.run_until_disconnected() for bot in bots))
 
 if __name__ == "__main__":
-    asyncio.run(main())
-
+    asyncio.run(start_system())
