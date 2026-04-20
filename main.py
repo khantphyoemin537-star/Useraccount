@@ -13,7 +13,7 @@ from html import escape as escape_html
 # ==========================================
 app = Flask('')
 @app.route('/')
-def home(): return "BoDx Guard System Active!"
+def home(): return "BoDx Sovereign Guard Active!"
 
 def run_flask(): 
     port = int(os.environ.get('PORT', 10000))
@@ -47,7 +47,8 @@ allow_col = db["allowed_users"]
 bots = [TelegramClient(f'session_bot_{i}', APP_ID, APP_HASH) for i in range(len(TOKENS))]
 main_bot = bots[0]
 
-shoot_tasks = {} 
+shoot_tasks = {} # /ပစ်သတ် အတွက်
+tracking_targets = {} # /ပစ် (Target Tracking) အတွက်
 bot_ids = []
 
 def is_allowed(user_id):
@@ -55,45 +56,53 @@ def is_allowed(user_id):
     return allow_col.find_one({"user_id": user_id}) is not None
 
 # ==========================================
-# 🎯 PROTECTION & ALERT LOGIC
+# 🎯 PROTECTION & TRACKING WATCHER
 # ==========================================
 
-# --- [Watcher] Owner Protection & Intruder Warning ---
 @main_bot.on(events.NewMessage())
-async def protector_watcher(event):
+async def global_watcher(event):
     if event.is_private or not event.text: return
     if event.sender_id in bot_ids: return
 
-    # 1. Owner ကို စော်ကားသူ/Reply ထောက်သူအား ကာကွယ်ခြင်း
-    reply = await event.get_reply_message()
-    if reply and reply.sender_id == OWNER_ID and event.sender_id != OWNER_ID:
-        # Owner ကို Reply ထောက်ရင် Bot တွေက ဝိုင်းဆော်မည်
-        words = [w.get("text") for w in filters_col.find() if w.get("text")]
-        attack_word = random.choice(words) if words else "ငါတို့ရဲ့ Creator ကို မင်းက ဘာမှတ်နေလဲ ခွေးမသား!"
-        for bot in bots:
-            try:
-                await bot.send_message(event.chat_id, f"မင်းက ငါတို့ Creator ကို လာစမ်းတာလား? {attack_word}", reply_to=event.id)
-                await asyncio.sleep(0.3)
-            except: pass
-        return
+    chat_id = event.chat_id
+    text = event.text.strip()
 
-    # 2. Allow user မဟုတ်သူ Cmd လာသုံးရင် သတိပေးခြင်း
-    cmds = ["ချိန်ထား", "ပစ်သတ်", "အပစ်ရပ်"]
-    if any(event.text.startswith(c) for c in cmds):
+    # 1. Owner Protection (ခွင့်ပြုချက်မရှိသူ Cmd လာသုံးလျှင် ၄ ကောင်လုံးက မတူညီသောစာဖြင့် ဆဲဆိုခြင်း)
+    protection_cmds = ["ချိန်ထား", "ပစ်သတ်", "ချီးမွမ်း"]
+    if any(text.startswith(c) for c in protection_cmds):
         if not is_allowed(event.sender_id):
             intruder = await event.get_sender()
             name = escape_html(intruder.first_name)
-            warning = f"ဖာသည်မသား {name}... မင်းက ဘာကောင်မို့လို့ ငါတို့စီမှာ အမိန့်လာပေးနေတာလဲ? မင်းကိုပါ ငါတို့ 4 ယောက် ပစ်သတ်ဖို့ အသင့်ချိန်ထားလိုက်ပြီ။"
-            for bot in bots:
+            insults = [
+                f"{name} မင်းက ငါတို့ Creator ရဲ့ စနစ်ကို လာထိတာလား? သေချင်နေပြီထင်တယ်!",
+                f"အမိန့်ပေးရအောင် မင်းက ဘာကောင်မို့လို့လဲ? {name} ခွေးမသား... မင်းကိုပါ ချိန်ထားလိုက်ပြီ။",
+                f"{name} လို အဆင့်မရှိတဲ့ကောင်က ငါတို့ Creator Command တွေကို လာကိုင်တာလား? သေမယ်နော်!",
+                f"မင်းကို ငါတို့ ၄ ယောက် အသေသတ်ဖို့ အသင့်ပဲ။ နောက်တစ်ခါ လာစမ်းရင် မင်းအလှည့်ပဲ။"
+            ]
+            for i, bot in enumerate(bots):
                 try:
-                    await bot.send_message(event.chat_id, warning, reply_to=event.id)
+                    await bot.send_message(chat_id, insults[i], reply_to=event.id)
                 except: pass
             return
 
+    # 2. Target Tracking (ပစ် အမိန့်ပေးခံထားရသူ စာပို့တိုင်း ၁ ကောင်စီ လိုက်ဆော်ခြင်း)
+    if chat_id in tracking_targets and event.sender_id == tracking_targets[chat_id]:
+        words = [w.get("text") for w in filters_col.find() if w.get("text")]
+        if not words: words = []
+        
+        target = await event.get_sender()
+        mention = f"<a href='tg://user?id={target.id}'>{escape_html(target.first_name)}</a>"
+        
+        attack_bot = random.choice(bots)
+        try:
+            await attack_bot.send_message(chat_id, f"{mention} {random.choice(words)}", parse_mode='html')
+        except: pass
+
 # ==========================================
-# 🔫 COMMANDS (For Owner & Allowed Users)
+# 🔫 FIRING SQUAD COMMANDS
 # ==========================================
 
+# --- ချိန်ထား ---
 @main_bot.on(events.NewMessage(pattern=r'^ချိန်ထား$'))
 async def aim_target(event):
     if not is_allowed(event.sender_id): return
@@ -111,6 +120,7 @@ async def aim_target(event):
     tasks = [bot.send_message(event.chat_id, msg, reply_to=reply.id, parse_mode='html') for bot in bots]
     await asyncio.gather(*tasks)
 
+# --- ပစ်သတ် (Reply အမြန်ဆော်ခြင်း) ---
 @main_bot.on(events.NewMessage(pattern=r'^ပစ်သတ်$'))
 async def fire_target(event):
     if not is_allowed(event.sender_id): return
@@ -118,11 +128,12 @@ async def fire_target(event):
     if not reply: return
 
     chat_id = event.chat_id
+    target = await reply.get_sender()
+    if not target: return
+    
     shoot_tasks[chat_id] = True 
-    sender = await event.get_sender()
-    name = escape_html(sender.first_name)
-    authority = f"<a href='tg://user?id={event.sender_id}'>{name}</a> အာဏာအရ ဒီကောင့်ကို အ​သေပစ်သတ်ပြီ"
-
+    mention = f"<a href='tg://user?id={target.id}'>{escape_html(target.first_name)}</a>"
+    
     words = [w.get("text") for w in filters_col.find() if w.get("text")]
     if not words: words = []
 
@@ -130,20 +141,40 @@ async def fire_target(event):
     while shoot_tasks.get(chat_id):
         try:
             current_bot = bots[bot_index % len(bots)]
-            attack_msg = f"{authority}\n\n{random.choice(words)}"
-            await current_bot.send_message(chat_id, attack_msg, reply_to=reply.id, parse_mode='html')
+            attack_msg = f"{mention} {random.choice(words)}"
+            await current_bot.send_message(chat_id, attack_msg, parse_mode='html')
             bot_index += 1
             await asyncio.sleep(0.4) 
-        except:
-            break
+        except: break
 
-@main_bot.on(events.NewMessage(pattern=r'^အပစ်ရပ်$'))
-async def stop_fire(event):
+# --- ပစ် (Target Tracking - စာပို့တိုင်း လိုက်ဆော်ခြင်း) ---
+@main_bot.on(events.NewMessage(pattern=r'^ပစ်$'))
+async def track_target(event):
+    if not is_allowed(event.sender_id): return
+    reply = await event.get_reply_message()
+    if not reply: return
+
+    target_id = reply.sender_id
+    tracking_targets[event.chat_id] = target_id
+    
+    target = await reply.get_sender()
+    name = escape_html(target.first_name)
+    await event.respond(f"{name} ကို ပစ်မှတ်ထားလိုက်ပြီ။ သူစာပို့တိုင်း ငါတို့ လိုက်ပစ်မယ်။")
+
+# --- ရပ် / အပစ်ရပ် ---
+@main_bot.on(events.NewMessage(pattern=r'^(ရပ်|အပစ်ရပ်)$'))
+async def stop_actions(event):
     if not is_allowed(event.sender_id): return
     chat_id = event.chat_id
-    if chat_id in shoot_tasks:
-        shoot_tasks[chat_id] = False
-        await event.reply("ငါတို့ 4 ယောက် ဒီခွေးမသားကို အ​သေသတ်ပေးထားတယ်။ပြန်ရှင်သန်ခွင့် မပေးဘူး")
+    
+    # ပစ်သတ် လုပ်နေတာ ရပ်မည်
+    shoot_tasks[chat_id] = False
+    
+    # Tracking လုပ်နေတာ ရပ်မည်
+    if chat_id in tracking_targets:
+        del tracking_targets[chat_id]
+        
+    await event.reply("ငါတို့ 4 ယောက် ဒီခွေးမသားကို အ​သေသတ်ပေးထားတယ်။ပြန်ရှင်သန်ခွင့် မပေးဘူး")
 
 # ==========================================
 # 🚀 START SYSTEM
@@ -154,8 +185,9 @@ async def start_system():
         await bot.start(bot_token=TOKENS[i])
         me = await bot.get_me()
         bot_ids.append(me.id)
-    print("✅ BoDx Guard & Firing Squad System Online!")
+    print("✅ BoDx Sovereign Guard & Firing Squad Online!")
     await asyncio.gather(*(bot.run_until_disconnected() for bot in bots))
 
 if __name__ == "__main__":
     asyncio.run(start_system())
+
