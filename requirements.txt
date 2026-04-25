@@ -1,6 +1,6 @@
 telethon
-pymongo[srv]
+pymongo
+openai
 flask
-dnspython
-Pillow
-pytz
+google-generativeai
+
