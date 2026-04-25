@@ -1,219 +1,177 @@
-import asyncio
-import logging
-import random
 import os
-import threading
+import re
+import random
+import string
+import asyncio
+from datetime import datetime
+from threading import Thread
 from flask import Flask
+from telethon import TelegramClient, events, Button
 from pymongo import MongoClient
-from telethon import TelegramClient, events
-from html import escape as escape_html
 
-# ==========================================
-# 🌐 FLASK KEEP-ALIVE
-# ==========================================
-app = Flask('')
-@app.route('/')
-def home(): return "BoDx Ultimate Guard Active!"
+# =========================
+# 🌐 KEEP ALIVE
+# =========================
+app = Flask(__name__)
+@app.route("/")
+def home(): return "🦇 Brotherhood of Dexter Bot is Running"
 
-def run_flask(): 
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+def run(): app.run(host="0.0.0.0", port=10000)
+def keep_alive(): Thread(target=run).start()
 
-logging.basicConfig(level=logging.ERROR)
-
-# ==========================================
-# ⚙️ CONFIGURATION
-# ==========================================
+# =========================
+# ⚙️ CONFIGURATIONS
+# =========================
+API_ID = 37675502 
+API_HASH = "45955dc059f23ca5bfa3dcaff9c0f032"
+BOT_TOKEN = "8738081667:AAGr7HkSxO6nC_QhPJJElKR2VKABTEDfNEo"
 OWNER_ID = 6015356597
+LOG_CHAT_ID = -1003933136412
+
 MONGO_URI = "mongodb+srv://khantphyoemin537_db_user:9VRKiaeZkz7rJdpz@cluster0.w6tgi8j.mongodb.net/?appName=Cluster0&tlsAllowInvalidCertificates=true"
-APP_ID = 30765851
-APP_HASH = '235b0bc6f03767302dc75763508f7b75'
 
-TOKENS = [
-    "7857238353:AAEkDQnXqxyvXOQufwJwzZ7tXlwrmzM6XyI",
-    "8565944163:AAE5tew3A1a6GkOw69vMPYSgV2obyO-wPz4",
-    "8704927120:AAFUIrQhFaly9yRkEhsD4Yu5FiIEfj1F7Oo",
-    "7716597590:AAF4uR9g-cOBLssQcPfqe2ROIxnr3dd-PDQ"
-]
+# =========================
+# 🧠 DATABASE SETUP
+# =========================
+mongo = MongoClient(MONGO_URI)
+db = mongo["Brotherhood_of_Dexter_DB"]
+actress_db = db["actresses"]
+users_db = db["users"]
+spawn_db = db["spawns"]
 
-# ==========================================
-# 🗄️ DATABASE SETUP
-# ==========================================
-client_mongo = MongoClient(MONGO_URI)
-db = client_mongo["telegram_bot"]
-filters_col = db["filters"] 
-allow_col = db["allowed_users"]
+bot = TelegramClient("bot_session", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+msg_count = {}
 
-bots = [TelegramClient(f'session_bot_{i}', APP_ID, APP_HASH) for i in range(len(TOKENS))]
-main_bot = bots[0]
+# =========================
+# 🛠 UTILS & UI HELPERS
+# =========================
+def gen_id(prefix):
+    return f"{prefix}-" + ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
-shoot_tasks = {} 
-tracking_targets = {} 
-bot_ids = []
+def get_rarity():
+    return random.choices(["Common", "Rare", "Epic", "Legendary", "Mythic"], weights=[55, 25, 12, 6, 2])[0]
 
-def is_allowed(user_id):
-    if user_id == OWNER_ID: return True
-    return allow_col.find_one({"user_id": user_id}) is not None
+def get_effect(r):
+    return {"Common": "▫️", "Rare": "🔵✨", "Epic": "🟣🔥✨", "Legendary": "🟡⚡🔥✨", "Mythic": "🔴👑⚡🔥✨"}.get(r, "")
 
-# ==========================================
-# 🎯 PROTECTION & TRACKING WATCHER
-# ==========================================
-
-@main_bot.on(events.NewMessage())
-async def global_watcher(event):
-    if event.is_private or not event.text: return
-    if event.sender_id in bot_ids: return
-
-    chat_id = event.chat_id
-    text = event.text.strip()
+# =========================
+# 🩸 1. DATABASE ADDING (/fuck)
+# =========================
+@bot.on(events.NewMessage(chats=LOG_CHAT_ID, pattern=r"^/fuck (.*)"))
+async def add_to_db(event):
+    if event.sender_id != OWNER_ID or not event.is_reply: return
     reply = await event.get_reply_message()
-
-    # 1. Ultimate Owner Protection (Allowed User ပါအဝင် အစ်ကို့ကို CMD လာသုံးရင် နှိပ်ကွပ်ခြင်း)
-    protection_cmds = ["ချိန်ထား", "ပစ်သတ်", "ချီးမွမ်း", "ပစ်"]
-    if any(text.startswith(c) for c in protection_cmds):
-        # အစ်ကို့ကို Reply ထောက်ပြီး CMD သုံးရင် (Allowed User ဖြစ်နေပါစေ ဆော်မည်)
-        if reply and reply.sender_id == OWNER_ID and event.sender_id != OWNER_ID:
-            words = [w.get("text") for w in filters_col.find() if w.get("text")]
-            if not words: words = ["Chief ကို လာမစမ်းနဲ့!", "သေချင်နေတာလား ခွေးမသား!"]
-            
-            intruder = await event.get_sender()
-            mention = f"<a href='tg://user?id={intruder.id}'>{escape_html(intruder.first_name)}</a>"
-            
-            # Bot ၄ ကောင်လုံးက DB ထဲက စာတစ်ကြောင်းစီယူပြီး ဝိုင်းဆော်မည်
-            for bot in bots:
-                try:
-                    attack_msg = f"{mention} {random.choice(words)}"
-                    await bot.send_message(chat_id, attack_msg, parse_mode='html')
-                    await asyncio.sleep(0.2)
-                except: pass
-            return
-
-        # Allowed User မဟုတ်သူက တခြားသူကို CMD လာသုံးရင် သတိပေးခြင်း
-        if not is_allowed(event.sender_id):
-            intruder = await event.get_sender()
-            name = escape_html(intruder.first_name)
-            warning = f"ဟေ့ရောင် {name}... မင်းက ဘာကောင်မို့လို့ ငါတို့စီမှာ အမိန့်လာပေးနေတာလဲ? မင်းကိုပါ ငါတို့ ၄ ယောက် ပစ်သတ်ဖို့ အသင့်ချိန်ထားလိုက်ပြီ။"
-            for bot in bots:
-                try:
-                    await bot.send_message(chat_id, warning, reply_to=event.id)
-                except: pass
-            return
-
-    # 2. Target Tracking (ပစ် အမိန့်ပေးခံထားရသူ စာပို့တိုင်း ၁ ကောင်စီ လိုက်ဆော်ခြင်း)
-    if chat_id in tracking_targets and event.sender_id == tracking_targets[chat_id]:
-        words = [w.get("text") for w in filters_col.find() if w.get("text")]
-        if not words: words = ["ခွေးမသား", "သေစမ်း"]
-        
-        target = await event.get_sender()
-        mention = f"<a href='tg://user?id={target.id}'>{escape_html(target.first_name)}</a>"
-        
-        attack_bot = random.choice(bots)
-        try:
-            await attack_bot.send_message(chat_id, f"{mention} {random.choice(words)}", parse_mode='html')
-        except: pass
-
-# ==========================================
-# 🔫 FIRING SQUAD COMMANDS
-# ==========================================
-
-@main_bot.on(events.NewMessage(pattern=r'^ချိန်ထား$'))
-async def aim_target(event):
-    if not is_allowed(event.sender_id): return
-    reply = await event.get_reply_message()
-    if not reply or reply.sender_id == OWNER_ID: return # Owner ဆိုရင် Guard က ကိုင်တွယ်ပြီးပြီ
-
-    sender = await event.get_sender()
-    name = escape_html(sender.first_name)
-    
-    if event.sender_id == OWNER_ID:
-        msg = f"<a href='tg://user?id={event.sender_id}'>{name}</a> ရဲ့ အမိန့်ပေးမှုအရ ဒီကောင့်ကို ပစ်သတ်ဖို့ အသင့်ချိန်ထားပါပြီ။"
-    else:
-        msg = f"ဗိုလ်ကြီး <a href='tg://user?id={event.sender_id}'>{name}</a> ရဲ့ အမိန့်ပေးမှုအရ ဒီကောင့်ကို ပစ်သတ်ဖို့ အသင့်ချိန်ထားပြီ ။"
-
-    tasks = [bot.send_message(event.chat_id, msg, reply_to=reply.id, parse_mode='html') for bot in bots]
-    await asyncio.gather(*tasks)
-
-@main_bot.on(events.NewMessage(pattern=r'^ပစ်သတ်$'))
-async def fire_target(event):
-    if not is_allowed(event.sender_id): return
-    reply = await event.get_reply_message()
-    if not reply or reply.sender_id == OWNER_ID: return
-
-    chat_id = event.chat_id
-    target = await reply.get_sender()
-    if not target: return
-    
-    shoot_tasks[chat_id] = True 
-    mention = f"<a href='tg://user?id={target.id}'>{escape_html(target.first_name)}</a>"
-    
-    words = [w.get("text") for w in filters_col.find() if w.get("text")]
-    if not words: words = ["သေစမ်း", "အပြတ်ရှင်းမယ်"]
-
-    bot_index = 0
-    while shoot_tasks.get(chat_id):
-        try:
-            current_bot = bots[bot_index % len(bots)]
-            attack_msg = f"{mention} {random.choice(words)}"
-            await current_bot.send_message(chat_id, attack_msg, parse_mode='html')
-            bot_index += 1
-            await asyncio.sleep(0.4) 
-        except: break
-
-@main_bot.on(events.NewMessage(pattern=r'^ပစ်$'))
-async def track_target(event):
-    if not is_allowed(event.sender_id): return
-    reply = await event.get_reply_message()
-    if not reply or reply.sender_id == OWNER_ID: return
-
-    target_id = reply.sender_id
-    tracking_targets[event.chat_id] = target_id
-    
-    target = await reply.get_sender()
-    name = escape_html(target.first_name)
-    await event.respond(f"အိုကေ! {name} ကို ပစ်မှတ်ထားလိုက်ပြီ။ သူစာပို့တိုင်း ငါတို့ လိုက်ပစ်မယ်။")
-
-@main_bot.on(events.NewMessage(pattern=r'^(ရပ်|အပစ်ရပ်)$'))
-async def stop_actions(event):
-    if not is_allowed(event.sender_id): return
-    chat_id = event.chat_id
-    shoot_tasks[chat_id] = False
-    if chat_id in tracking_targets:
-        del tracking_targets[chat_id]
-    await event.reply("ငါတို့ 4 ယောက် ဒီခွေးမသားကို အ​သေသတ်ပေးထားတယ်။ပြန်ရှင်သန်ခွင့် မပေးဘူး")
-
-# --- [ဖျက်] Bot များ ပို့ထားသမျှစာများ ပြန်ဖျက်ခြင်း ---
-@main_bot.on(events.NewMessage(pattern=r'^ဖျက်$'))
-async def delete_bot_messages(event):
-    if not is_allowed(event.sender_id): return
-    chat_id = event.chat_id
-
-    # Cmd ပို့လိုက်တဲ့ "ဖျက်" ဆိုတဲ့စာကို အရင်ဖျက်မယ်
+    if not reply.photo: return
     try:
-        await event.delete()
-    except: pass
+        data = event.pattern_match.group(1).split('|')
+        name = data[0].strip()
+        rarity = data[1].strip() if len(data) > 1 else get_rarity()
+        base_id = gen_id("BASE")
+        actress_db.insert_one({
+            "base_id": base_id, "name": name.lower(), "display_name": name,
+            "rarity": rarity, "message_id": reply.id, "timestamp": datetime.now()
+        })
+        await event.reply(f"✅ **Saved to DB:** `{name}` | `{rarity}`")
+    except Exception as e: await event.reply(f"❌ Error: {e}")
 
-    # Bot တစ်ကောင်ချင်းစီအလိုက် သူတို့ပို့ထားခဲ့တဲ့ စာတွေကို လိုက်ရှာပြီးဖျက်မယ်
-    # နောက်ဆုံးပို့ထားတဲ့စာအစောင် ၁၀၀ အတွင်းက bot စာတွေကိုပဲ ဖျက်မှာပါ
-    for bot in bots:
-        try:
-            async for message in bot.iter_messages(chat_id, limit=100):
-                if message.sender_id in bot_ids:
-                    await message.delete()
-                    await asyncio.sleep(0.2) # Flood မမိအောင် ခဏနားပေးခြင်း
-        except Exception as e:
-            print(f"Delete Error: {e}")
+# =========================
+# 🍷 2. SPAWN SYSTEM (Auto 50 msgs)
+# =========================
+async def spawn_actress(chat_id):
+    if spawn_db.find_one({"chat_id": chat_id, "active": True}): return
+    all_data = list(actress_db.find())
+    if not all_data: return
+    target = random.choice(all_data)
+    spawn_db.update_one({"chat_id": chat_id}, {"$set": {
+        "base_id": target["base_id"], "name": target["name"], "display": target["display_name"],
+        "rarity": target["rarity"], "active": True, "message_id": target["message_id"]
+    }}, upsert=True)
+    
+    ui = f"""🩸 **A new actress has appeared!**
 
-# ==========================================
-# 🚀 START SYSTEM
-# ==========================================
-async def start_system():
-    threading.Thread(target=run_flask, daemon=True).start()
-    for i, bot in enumerate(bots):
-        await bot.start(bot_token=TOKENS[i])
-        me = await bot.get_me()
-        bot_ids.append(me.id)
-    print("✅ BoDx Sovereign Guard System Online!")
-    await asyncio.gather(*(bot.run_until_disconnected() for bot in bots))
+🎴 **Name:** {target['display_name']}
+💎 **Rarity:** {target['rarity']} {get_effect(target['rarity'])}
+
+Copy to catch:
+`/catch {target['display_name']}`"""
+    await bot.send_file(chat_id, file=target['message_id'], caption=ui)
+
+@bot.on(events.NewMessage)
+async def auto_spawn(event):
+    if event.is_private or event.raw_text.startswith("/"): return
+    cid = event.chat_id
+    msg_count[cid] = msg_count.get(cid, 0) + 1
+    if msg_count[cid] >= 50: # စာအစောင် ၅၀ ပြည့်မှကျမည်
+        await spawn_actress(cid)
+        msg_count[cid] = 0
+
+@bot.on(events.NewMessage(pattern=r"^/waifu"))
+async def manual_spawn(event): await spawn_actress(event.chat_id)
+
+# =========================
+# 🖤 3. CATCH SYSTEM
+# =========================
+@bot.on(events.NewMessage(pattern=r"^/catch (.+)"))
+async def catch_actress(event):
+    guess = event.pattern_match.group(1).strip().lower()
+    data = spawn_db.find_one_and_update({"chat_id": event.chat_id, "active": True}, {"$set": {"active": False}})
+    if not data: return await event.reply("❌ နောက်ကျသွားပါပြီ!")
+    if guess == data["name"]:
+        card_id = gen_id("CARD")
+        users_db.insert_one({
+            "user_id": event.sender_id, "card_id": card_id, "display_name": data["display"],
+            "rarity": data["rarity"], "message_id": data["message_id"], "caught_at": datetime.now()
+        })
+        await event.reply(f"🏆 **Caught!**\n\n🎴 **{data['display']}** ({data['rarity']}) {get_effect(data['rarity'])}\n🔖 ID: `{card_id}`")
+    else:
+        spawn_db.update_one({"chat_id": event.chat_id}, {"$set": {"active": True}})
+        await event.reply("❌ နာမည်မှားနေပါတယ်ဟ။")
+
+# =========================
+# 👑 4. HAREM & 🎁 5. GIFT
+# =========================
+@bot.on(events.NewMessage(pattern=r"^/harem"))
+async def view_harem(event):
+    user_id = (await event.get_reply_message()).sender_id if event.is_reply else event.sender_id
+    cards = list(users_db.find({"user_id": user_id}))
+    if not cards: return await event.reply("🦇 Empty Harem.")
+    c = cards[0]
+    ui = f"🖤 **Harem** (1/{len(cards)})\n\n🎴 **{c['display_name']}**\n💎 {c['rarity']} {get_effect(c['rarity'])}\n🔖 ID: `{c['card_id']}`"
+    btns = [[Button.inline("Next ➡️", data=f"h_{user_id}_1")]]
+    await bot.send_file(event.chat_id, file=c['message_id'], caption=ui, buttons=btns)
+
+@bot.on(events.CallbackQuery(pattern=re.compile(rb"h_(\d+)_(\d+)")))
+async def harem_nav(event):
+    uid, idx = int(event.data_match.group(1)), int(event.data_match.group(2))
+    cards = list(users_db.find({"user_id": uid}))
+    idx = idx % len(cards)
+    c = cards[idx]
+    ui = f"🖤 **Harem** ({idx+1}/{len(cards)})\n\n🎴 **{c['display_name']}**\n💎 {c['rarity']} {get_effect(c['rarity'])}\n🔖 ID: `{c['card_id']}`"
+    await event.edit(file=c['message_id'], caption=ui, buttons=[[Button.inline("⬅️ Prev", data=f"h_{uid}_{idx-1}"), Button.inline("Next ➡️", data=f"h_{uid}_{idx+1}")]])
+
+@bot.on(events.NewMessage(pattern=r"^/gift (.+)"))
+async def gift_actress(event):
+    if not event.is_reply: return await event.reply("⚠️ Reply ထောက်ပေးပါ။")
+    cid = event.pattern_match.group(1).strip().upper()
+    receiver = (await event.get_reply_message()).sender_id
+    res = users_db.update_one({"user_id": event.sender_id, "card_id": cid}, {"$set": {"user_id": receiver}})
+    if res.modified_count: await event.reply(f"🎁 Card `{cid}` ကို လက်ဆောင်ပေးလိုက်ပါပြီ!")
+    else: await event.reply("❌ Invalid Card ID.")
+
+# =========================
+# 🏆 6. TOP LEADERBOARD
+# =========================
+@bot.on(events.NewMessage(pattern=r"^/top"))
+async def leaderboard(event):
+    top_users = list(users_db.aggregate([{"$group": {"_id": "$user_id", "count": {"$sum": 1}}}, {"$sort": {"count": -1}}, {"$limit": 10}]))
+    text = "🏆 **Top 10 Harem Collectors**\n\n"
+    for i, u in enumerate(top_users, 1):
+        try: name = (await bot.get_entity(u["_id"])).first_name
+        except: name = "User"
+        text += f"{i}. {name} — {u['count']} cards\n"
+    await event.reply(text)
 
 if __name__ == "__main__":
-    asyncio.run(start_system())
+    keep_alive()
+    print("🦇 Brotherhood System Online!")
+    bot.run_until_disconnected()
