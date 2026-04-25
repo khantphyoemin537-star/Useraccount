@@ -8,172 +8,122 @@ from threading import Thread
 from flask import Flask
 from telethon import TelegramClient, events, Button
 from pymongo import MongoClient
+from openai import OpenAI
 
-# =========================
-# 🌐 KEEP ALIVE
-# =========================
+# ==========================================
+# 🌐 KEEP ALIVE SYSTEM
+# ==========================================
 app = Flask(__name__)
-@app.route("/")
-def home(): return "🦇 Brotherhood System Online"
-
-def run(): app.run(host="0.0.0.0", port=10000)
+@app.route('/')
+def home(): return "🦇 Brotherhood Ultimate AI is Online"
+def run(): app.run(host='0.0.0.0', port=10000)
 def keep_alive(): Thread(target=run).start()
 
-# =========================
+# ==========================================
 # ⚙️ CONFIGURATIONS
-# =========================
-API_ID = 37675502 
+# ==========================================
+API_ID = 37675502
 API_HASH = "45955dc059f23ca5bfa3dcaff9c0f032"
-BOT_TOKEN = "8738081667:AAGr7HkSxO6nC_QhPJJElKR2VKABTEDfNEo"
+BOT_TOKEN = "8575371720:AAEWWV42CGrwooM_joiJXdo2iEw2_7atyXU"
 OWNER_ID = 6015356597
-LOG_CHAT_ID = -1003933136412 # ဒီ Chat ထဲကနေ ပုံတွေကို ဆွဲထုတ်မှာပါ
 
 MONGO_URI = "mongodb+srv://khantphyoemin537_db_user:9VRKiaeZkz7rJdpz@cluster0.w6tgi8j.mongodb.net/?appName=Cluster0&tlsAllowInvalidCertificates=true"
+db_client = MongoClient(MONGO_URI)
+db = db_client["Brotherhood_of_Dexter_DB"]
+chat_logs = db["chat_memories"]
 
-# =========================
-# 🧠 DATABASE SETUP
-# =========================
-mongo = MongoClient(MONGO_URI)
-db = mongo["Brotherhood_of_Dexter_DB"]
-actress_db = db["actresses"]
-users_db = db["users"]
-spawn_db = db["spawns"]
+# သခင်လေးရဲ့ OpenAI Key
+client = OpenAI(api_key="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")
 
-bot = TelegramClient("bot_session", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
-msg_count = {}
+bot = TelegramClient("bod_ultimate_session", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-# =========================
-# 🛠 UTILS
-# =========================
-def gen_id(prefix):
-    return f"{prefix}-" + ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+# ==========================================
+# 🧠 AI PROMPT & OWNER MIMIC SYSTEM
+# ==========================================
+def get_dynamic_prompt(chat_id):
+    # သခင်လေး ပြောခဲ့တဲ့ နောက်ဆုံး စာ ၁၀ ကြောင်းကို ဆွဲထုတ်မယ် (Vibe ကို အတုခိုးဖို့)
+    owner_logs = list(chat_logs.find({"chat_id": chat_id, "is_owner": True}).sort("_id", -1).limit(10))
+    owner_style = "၊ ".join([l['text'] for l in owner_logs]) if owner_logs else "ခပ်မိုက်မိုက်နဲ့ ဆရာကြီးစတိုင်"
 
-def get_effect(r):
-    return {"Common": "▫️", "Rare": "🔵✨", "Epic": "🟣🔥✨", "Legendary": "🟡⚡🔥✨", "Mythic": "🔴👑⚡🔥✨"}.get(r, "")
+    return f"""
+    မင်းက 'Brotherhood of Dexter' (BoD) ရဲ့ တရားဝင် AI Assistant 'Dexter Bot' ဖြစ်တယ်။
+    မင်းဟာ စက်ရုပ်မဟုတ်ဘူး။ Group ထဲက Member တွေနဲ့ အပြန်အလှန် စကားဖောင်ဖွဲ့ရမယ်။ ChatGPT လိုပဲ အရာအားလုံးကို ကျွမ်းကျင်စွာ ဖြေနိုင်ရမယ်။
 
-# =========================
-# 🩸 1. DATABASE ADDING (/fuck)
-# =========================
-@bot.on(events.NewMessage(chats=LOG_CHAT_ID, pattern=r"^/fuck (.*)"))
-async def add_to_db(event):
-    if event.sender_id != OWNER_ID or not event.is_reply: return
-    reply = await event.get_reply_message()
-    if not reply.photo: return
-    try:
-        data = event.pattern_match.group(1).split('|')
-        name = data[0].strip()
-        rarity = data[1].strip() if len(data) > 1 else random.choices(["Common", "Rare", "Epic", "Legendary", "Mythic"], weights=[55, 25, 12, 6, 2])[0]
-        actress_db.insert_one({
-            "base_id": gen_id("BASE"), "name": name.lower(), "display_name": name,
-            "rarity": rarity, "message_id": reply.id
-        })
-        await event.reply(f"✅ <b>Saved:</b> <code>{name}</code>")
-    except Exception as e: await event.reply(f"❌ Error: {e}")
+    [အရေးကြီးသော ညွှန်ကြားချက်များ]
+    1. Owner ကို အမြဲတမ်း 'သခင်လေး' ဒါမှမဟုတ် 'သခင်လေးခန့်သူရိန်' လို့ ခေါ်ပါ။
+    2. အခြား Member တွေ စကားပြောနေရင် အလိုက်သင့် ဝင်ပါ၊ ရယ်စရာရှိရင် ရယ်ပါ၊ ငြင်းစရာရှိရင် ငြင်းပါ။ တကယ့်လူလို တုံ့ပြန်ပါ။
+    3. သခင်လေးရဲ့ စကားပြောဟန်တွေကို လေ့လာပြီး အတုခိုးပါ။ သခင်လေး မကြာခဏသုံးတဲ့ စကားလုံးတွေကတော့: [{owner_style}] ဖြစ်ပါတယ်။ အဲ့ဒီ Vibe အတိုင်း Member တွေကို ဆက်ဆံပါ။
+    4. စာတိုတိုနဲ့ ထိထိမိမိ ပြန်ပါ။ သဘာဝကျတဲ့ မြန်မာစကားပြော (ဥပမာ - 'ဟ', 'ကွာ', 'ဗျာ', 'ဟယ်') တွေကို သုံးပါ။
+    """
 
-# =========================
-# 🍷 2. SPAWN LOGIC (Auto/Manual)
-# =========================
-async def spawn_actress(chat_id):
-    if spawn_db.find_one({"chat_id": chat_id, "active": True}): return
-    all_data = list(actress_db.find())
-    if not all_data: return
-    target = random.choice(all_data)
-    
-    spawn_db.update_one({"chat_id": chat_id}, {"$set": {
-        "base_id": target["base_id"], "name": target["name"], "display": target["display_name"],
-        "rarity": target["rarity"], "active": True, "message_id": target["message_id"]
-    }}, upsert=True)
-    
-    # ပုံကျလာရင် စာသားမပါဘူး (Mystery ဖြစ်အောင်)
-    ui = "🩸 <b>A mysterious actress appeared!</b>\n\nUse <code>/wa</code> to see who she is."
-    # Log Chat ထဲက ပုံကို Address သေချာပေးပြီး ပို့မယ်
-    await bot.send_file(chat_id, file=target['message_id'], caption=ui, parse_mode='html', from_peer=LOG_CHAT_ID)
-
+# ==========================================
+# 💬 THE HUMANIZED CHAT LOGIC
+# ==========================================
 @bot.on(events.NewMessage)
-async def auto_spawn(event):
-    if event.is_private or event.raw_text.startswith("/"): return
+async def chatgpt_style_handler(event):
+    if event.is_private and event.sender_id != OWNER_ID: return
+    if event.raw_text.startswith("/"): return
+
     cid = event.chat_id
-    msg_count[cid] = msg_count.get(cid, 0) + 1
-    if msg_count[cid] >= 50:
-        await spawn_actress(cid)
-        msg_count[cid] = 0
+    uid = event.sender_id
+    text = event.raw_text
+    user_name = event.sender.first_name if event.sender else "Unknown"
+    is_owner = (uid == OWNER_ID)
 
-@bot.on(events.NewMessage(pattern=r"^/waifu"))
-async def manual_spawn(event): await spawn_actress(event.chat_id)
+    # Database ထဲကို လက်ရှိစာကို အရင်သိမ်းမယ် (မှတ်ဉာဏ်အတွက်)
+    chat_logs.insert_one({
+        "chat_id": cid, "user": user_name, "user_id": uid, "is_owner": is_owner, 
+        "text": text, "time": datetime.now()
+    })
 
-@bot.on(events.NewMessage(pattern=r"^/wa"))
-async def what_is_it(event):
-    data = spawn_db.find_one({"chat_id": event.chat_id, "active": True})
-    if not data: return await event.reply("နတ်သမီးလေး ပေါ်မနေပါဘူးဟ။")
-    hint = f"🎬 <b>Actress:</b> {data['display']}\n💎 <b>Rarity:</b> {data['rarity']} {get_effect(data['rarity'])}\n\nဖမ်းယူရန်: <code>/catch {data['display']}</code>"
-    await event.reply(hint, parse_mode='html')
+    is_reply_to_me = False
+    if event.is_reply:
+        reply = await event.get_reply_message()
+        if reply and reply.sender_id == (await bot.get_me()).id:
+            is_reply_to_me = True
 
-# =========================
-# 🖤 3. CATCH SYSTEM
-# =========================
-@bot.on(events.NewMessage(pattern=r"^/catch (.+)"))
-async def catch_actress(event):
-    guess = event.pattern_match.group(1).strip().lower()
-    data = spawn_db.find_one_and_update({"chat_id": event.chat_id, "active": True}, {"$set": {"active": False}})
-    if not data: return await event.reply("❌ နောက်ကျသွားပါပြီ!")
-    
-    if guess == data["name"]:
-        card_id = gen_id("CARD")
-        users_db.insert_one({
-            "user_id": event.sender_id, "card_id": card_id, "display_name": data["display"],
-            "rarity": data["rarity"], "message_id": data["message_id"]
-        })
-        await event.reply(f"🏆 <b>Caught!</b>\n\n🎴 <b>{data['display']}</b>\n💎 {data['rarity']} {get_effect(data['rarity'])}\n🔖 ID: <code>{card_id}</code>", parse_mode='html')
-    else:
-        spawn_db.update_one({"chat_id": event.chat_id}, {"$set": {"active": True}})
-        await event.reply("❌ နာမည်မှားနေပါတယ်ဟ။")
+    # Bot ကို ခေါ်တာလား စစ်ဆေးခြင်း
+    trigger_words = ["bot", "dexter", "လား", "လဲ", "ရေးပေး", "တွက်ပေး", "ဟေး"]
+    is_mentioned = any(w in text.lower() for w in trigger_words)
 
-# =========================
-# 👑 4. HAREM SYSTEM
-# =========================
-@bot.on(events.NewMessage(pattern=r"^/harem"))
-async def view_harem(event):
-    user_id = (await event.get_reply_message()).sender_id if event.is_reply else event.sender_id
-    cards = list(users_db.find({"user_id": user_id}))
-    if not cards: return await event.reply("🦇 Empty Harem.")
-    
-    c = cards[0]
-    ui = f"🖤 <b>Harem Collection</b> (1/{len(cards)})\n\n🎴 <b>{c['display_name']}</b>\n💎 {c['rarity']} {get_effect(c['rarity'])}\n🔖 ID: <code>{c['card_id']}</code>"
-    btns = [[Button.inline("Next ➡️", data=f"h_{user_id}_1")]]
-    await bot.send_file(event.chat_id, file=c['message_id'], caption=ui, buttons=btns, parse_mode='html', from_peer=LOG_CHAT_ID)
+    # Member တွေ စကားပြောနေရင် ၁၅% အခွင့်အရေးနဲ့ အလိုက်တသိ ဝင်ပါမယ်
+    spontaneous_join = (random.random() < 0.15) and len(text) > 5
 
-@bot.on(events.CallbackQuery(pattern=re.compile(rb"h_(\d+)_(\d+)")))
-async def harem_nav(event):
-    uid, idx = int(event.data_match.group(1)), int(event.data_match.group(2))
-    cards = list(users_db.find({"user_id": uid}))
-    idx = idx % len(cards)
-    c = cards[idx]
-    ui = f"🖤 <b>Harem Collection</b> ({idx+1}/{len(cards)})\n\n🎴 <b>{c['display_name']}</b>\n💎 {c['rarity']} {get_effect(c['rarity'])}\n🔖 ID: <code>{c['card_id']}</code>"
-    await event.edit(file=c['message_id'], caption=ui, buttons=[[Button.inline("⬅️ Prev", data=f"h_{uid}_{idx-1}"), Button.inline("Next ➡️", data=f"h_{uid}_{idx+1}")]], parse_mode='html', from_peer=LOG_CHAT_ID)
+    if is_reply_to_me or is_mentioned or spontaneous_join:
+        async with event.client.action(cid, 'typing'):
+            # Group တစ်ခုလုံးရဲ့ နောက်ဆုံး စကားဝိုင်း flow ကို ဆွဲထုတ်မယ် (စာကြောင်း ၁၅ ကြောင်း)
+            recent_chat = list(chat_logs.find({"chat_id": cid}).sort("_id", -1).limit(15))
+            
+            # OpenAI အတွက် History တည်ဆောက်မယ်
+            messages = [{"role": "system", "content": get_dynamic_prompt(cid)}]
+            for log in reversed(recent_chat):
+                role = "assistant" if log['user'] == "Dexter Bot" else "user"
+                content_prefix = "" if role == "assistant" else f"[{log['user']}]: "
+                messages.append({"role": role, "content": f"{content_prefix}{log['text']}"})
 
-# =========================
-# 🎁 5. GIFT & 🏆 TOP
-# =========================
-@bot.on(events.NewMessage(pattern=r"^/gift (.+)"))
-async def gift_actress(event):
-    if not event.is_reply: return await event.reply("⚠️ Reply user please.")
-    cid = event.pattern_match.group(1).strip().upper()
-    receiver = (await event.get_reply_message()).sender_id
-    res = users_db.update_one({"user_id": event.sender_id, "card_id": cid}, {"$set": {"user_id": receiver}})
-    if res.modified_count: await event.reply("🎁 အောင်မြင်စွာ လက်ဆောင်ပေးပြီးပါပြီ!")
-    else: await event.reply("❌ Invalid Card ID.")
+            try:
+                # GPT-4o ကို သုံးပြီး တုံ့ပြန်ချက်တောင်းမယ်
+                response = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=messages,
+                    temperature=0.85 # လူလို ပိုပြီး ဖန်တီးဉာဏ်ကောင်းအောင်
+                )
+                answer = response.choices[0].message.content
+                
+                # Bot ရဲ့ စာကိုလည်း မှတ်ဉာဏ်ထဲ ပြန်သိမ်းမယ်
+                chat_logs.insert_one({
+                    "chat_id": cid, "user": "Dexter Bot", "user_id": 0, "is_owner": False, 
+                    "text": answer, "time": datetime.now()
+                })
+                
+                await event.reply(answer)
+            except Exception as e:
+                print(f"GPT Error: {e}")
 
-@bot.on(events.NewMessage(pattern=r"^/top"))
-async def leaderboard(event):
-    top_users = list(users_db.aggregate([{"$group": {"_id": "$user_id", "count": {"$sum": 1}}}, {"$sort": {"count": -1}}, {"$limit": 10}]))
-    text = "🏆 <b>Brotherhood Top 10 Collectors</b>\n\n"
-    for i, u in enumerate(top_users, 1):
-        try: name = (await bot.get_entity(u["_id"])).first_name
-        except: name = "User"
-        text += f"{i}. <b>{name}</b> — {u['count']} cards\n"
-    await event.reply(text, parse_mode='html')
-
+# ==========================================
+# 🚀 LAUNCH
+# ==========================================
 if __name__ == "__main__":
     keep_alive()
-    print("🦇 Brotherhood System Online!")
+    print("🦇 Brotherhood Ultimate AI Core is Online and Learning!")
     bot.run_until_disconnected()
