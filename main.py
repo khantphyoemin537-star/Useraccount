@@ -58,9 +58,10 @@ def get_dynamic_prompt(chat_id):
 
 # ==========================================
 # 💬 THE HUMANIZED CHAT LOGIC
-# ==========================================
+# ... (အပေါ်က import တွေအတိုင်းပဲ)
+
 @bot.on(events.NewMessage)
-async def chatgpt_style_handler(event):
+async def ultimate_chat_handler(event):
     if event.is_private and event.sender_id != OWNER_ID: return
     if event.raw_text.startswith("/"): return
 
@@ -70,55 +71,51 @@ async def chatgpt_style_handler(event):
     user_name = event.sender.first_name if event.sender else "Unknown"
     is_owner = (uid == OWNER_ID)
 
-    # Database ထဲကို လက်ရှိစာကို အရင်သိမ်းမယ် (မှတ်ဉာဏ်အတွက်)
-    chat_logs.insert_one({
-        "chat_id": cid, "user": user_name, "user_id": uid, "is_owner": is_owner, 
-        "text": text, "time": datetime.now()
-    })
+    # Database ထဲ အရင်သိမ်း (ဒါက အရေးကြီးတယ်)
+    try:
+        chat_logs.insert_one({
+            "chat_id": cid, "user": user_name, "user_id": uid, "is_owner": is_owner, 
+            "text": text, "time": datetime.now()
+        })
+    except: pass # DB connection ခေတ္တပြတ်ရင်လည်း bot မရပ်သွားအောင်
 
+    # --- ဝင်ပြောမယ့် Logic ကို ပိုမြှင့်လိုက်မယ် ---
+    # ၁။ Bot ကို ခေါ်တာ (သို့) Reply ထောက်တာ
+    # ၂။ ဒါမှမဟုတ် ၈၀% အခွင့်အရေး (စမ်းသပ်တဲ့အနေနဲ့ အများကြီး ပြောခိုင်းကြည့်မယ်)
+    
     is_reply_to_me = False
     if event.is_reply:
         reply = await event.get_reply_message()
         if reply and reply.sender_id == (await bot.get_me()).id:
             is_reply_to_me = True
 
-    # Bot ကို ခေါ်တာလား စစ်ဆေးခြင်း
-    trigger_words = ["bot", "dexter", "လား", "လဲ", "ရေးပေး", "တွက်ပေး", "ဟေး"]
-    is_mentioned = any(w in text.lower() for w in trigger_words)
+    trigger_words = ["bot", "dexter", "လား", "လဲ", "ဟေး", "ညီလေး"]
+    is_called = any(word in text.lower() for word in trigger_words)
+    
+    # စမ်းသပ်ကာလမို့လို့ ၈၀% ပြောခိုင်းမယ် (နောက်မှ ပြန်လျှော့လို့ရတယ်)
+    force_talk = (random.random() < 0.8) 
 
-    # Member တွေ စကားပြောနေရင် ၁၅% အခွင့်အရေးနဲ့ အလိုက်တသိ ဝင်ပါမယ်
-    spontaneous_join = (random.random() < 0.15) and len(text) > 5
-
-    if is_reply_to_me or is_mentioned or spontaneous_join:
+    if is_reply_to_me or is_called or force_talk:
         async with event.client.action(cid, 'typing'):
-            # Group တစ်ခုလုံးရဲ့ နောက်ဆုံး စကားဝိုင်း flow ကို ဆွဲထုတ်မယ် (စာကြောင်း ၁၅ ကြောင်း)
-            recent_chat = list(chat_logs.find({"chat_id": cid}).sort("_id", -1).limit(15))
-            
-            # OpenAI အတွက် History တည်ဆောက်မယ်
-            messages = [{"role": "system", "content": get_dynamic_prompt(cid)}]
-            for log in reversed(recent_chat):
-                role = "assistant" if log['user'] == "Dexter Bot" else "user"
-                content_prefix = "" if role == "assistant" else f"[{log['user']}]: "
-                messages.append({"role": role, "content": f"{content_prefix}{log['text']}"})
-
             try:
-                # GPT-4o ကို သုံးပြီး တုံ့ပြန်ချက်တောင်းမယ်
+                # Memory ဆွဲထုတ်ခြင်း
+                recent_chat = list(chat_logs.find({"chat_id": cid}).sort("_id", -1).limit(10))
+                messages = [{"role": "system", "content": get_dynamic_prompt(cid)}]
+                
+                for log in reversed(recent_chat):
+                    role = "assistant" if log['user'] == "Dexter Bot" else "user"
+                    messages.append({"role": role, "content": f"[{log['user']}]: {log['text']}"})
+
                 response = client.chat.completions.create(
-                    model="gpt-4o",
+                    model="gpt-4o", # Model နာမည် မှန်မမှန် ပြန်စစ်ပါ (gpt-4o သို့ gpt-3.5-turbo)
                     messages=messages,
-                    temperature=0.85 # လူလို ပိုပြီး ဖန်တီးဉာဏ်ကောင်းအောင်
+                    temperature=0.8
                 )
                 answer = response.choices[0].message.content
-                
-                # Bot ရဲ့ စာကိုလည်း မှတ်ဉာဏ်ထဲ ပြန်သိမ်းမယ်
-                chat_logs.insert_one({
-                    "chat_id": cid, "user": "Dexter Bot", "user_id": 0, "is_owner": False, 
-                    "text": answer, "time": datetime.now()
-                })
-                
                 await event.reply(answer)
             except Exception as e:
-                print(f"GPT Error: {e}")
+                print(f"DEBUG: {e}") # Render Logs ထဲမှာ ဒါကို သွားကြည့်လို့ရတယ်
+
 
 # ==========================================
 # 🚀 LAUNCH
