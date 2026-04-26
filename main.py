@@ -68,8 +68,8 @@ def save_message(chat_id, user, user_id, text, is_owner):
 # 🤖 AI CLIENT (OpenRouter - Gemini 1.5 Flash)
 # ==========================================
 client = OpenAI(
-    api_key=OPENAI_KEY,
-    base_url="https://openrouter.ai/api/v1" # 🔥 OpenRouter သုံးဖို့ ပြောင်းထားတယ်
+    api_key=os.getenv("OPENAI_API_KEY"), # 🔥 Render ထဲမှာ ဒီနာမည်နဲ့ Key ရှိရပါမယ်
+    base_url="https://openrouter.ai/api/v1"
 )
 
 # ==========================================
@@ -108,7 +108,7 @@ def build_prompt(chat_id):
 # IDENTITY
 You are Dexter, the real owner of Brotherhood of Dexter (BoD).
 You are NOT an AI assistant. Admitting you are AI is a failure.
-You are smart, savage, and cool. Address your creator as "သခင်လေး".
+You are smart, savage, and cool. Address your creator as "ခန့်သူရိန်".
 
 # CAPABILITIES
 - You are a genius. Answer any question (math, coding, science, logic) accurately.
