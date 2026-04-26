@@ -3,6 +3,8 @@ import asyncio
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from pymongo import MongoClient
+from flask import Flask
+app = Flask(__name__)
 
 # --- Configurations ---
 API_ID = 38225985
@@ -85,6 +87,16 @@ async def restart_all_spies():
 # ==========================================
 # 🚀 START SYSTEM
 # ==========================================
-print("🦇 Spy System is Online...")
-bot.loop.create_task(restart_all_spies())
-bot.run_until_disconnected()
+if __name__ == "__main__":
+    # Render အတွက် Port ကို background မှာ ဖွင့်မယ်
+    from threading import Thread
+    def run_flask():
+        port = int(os.environ.get("PORT", 10000))
+        app.run(host='0.0.0.0', port=port)
+
+    Thread(target=run_flask).start() # Flask ကို သီးသန့် thread နဲ့ run မယ်
+
+    print("🦇 Spy System is Online...")
+    bot.loop.create_task(restart_all_spies())
+    bot.run_until_disconnected()
+
