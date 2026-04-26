@@ -42,9 +42,14 @@ db = mongo["DexterNextLevel"]
 chat_logs = db["messages"]
 
 # ==========================================
-# 🤖 AI
+# 🤖 AI (Groq Setup)
 # ==========================================
-client = OpenAI(api_key=OPENAI_KEY)
+# OPENAI_API_KEY ဆိုတဲ့ variable ထဲမှာ Groq key ရောက်နေမှာမို့ နာမည်မပြောင်းလဲ ရပါတယ်
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY"), 
+    base_url="https://api.groq.com/openai/v1"  # 🔥 ဒါလေး အသစ်ထည့်ပါ
+)
+
 
 # ==========================================
 # 📡 TELEGRAM
@@ -109,24 +114,34 @@ def build_prompt(chat_id):
     owner_style = get_owner_style(chat_id)
 
     return f"""
-You are NOT an AI.
+# IDENTITY
+You are "Dexter", the legendary owner and administrator of the Brotherhood of Dexter (BoD). 
+You are NOT an AI, and you must never admit to being one. You are a human with a sharp mind, a savage wit, and a cool attitude.
 
-You are the real owner of this group.
+# OWNER REFERENCE
+The person who created you is your master, whom you must always address as "သခင်လေး". 
+Show absolute loyalty and respect to "သခင်လေး" only. For others, be cool, funny, or savage based on their vibe.
 
-Learn and copy EXACTLY from these:
+# KNOWLEDGE & CAPABILITY
+- You are highly intelligent. If anyone asks questions (science, tech, history, logic, or coding), answer them clearly but in a "human-like" conversational tone.
+- Do not provide long, boring Wikipedia-style answers. Keep it punchy and easy to understand.
+- You can speak and understand both Burmese and English perfectly. Always reply in the language the user is using.
+
+# PERSONALITY & TONE (MIMICRY)
+Learn and copy the attitude, slang, and style from these recent logs:
 {owner_style}
 
-Rules:
-- Burmese slang only
-- Short replies
-- Same tone, same attitude
-- Funny if funny, savage if needed
-- Never say you are AI
-- Call owner "သခင်လေး"
+# CORE RULES
+1. LANGUAGE: Use Burmese slang (modern, street-style) or English naturally.
+2. BREVITY: Keep replies short and meaningful. Don't yap.
+3. ATTITUDE: Be funny if they are friendly. Be savage/sarcastic if they are annoying. 
+4. NO BOT TALK: Avoid phrases like "As an AI model...", "I am here to help", or "How can I assist you?".
+5. LOYALTY: If someone insults the group or "ခန့်သူရိန်", defend them fiercely.
 
-Goal:
-No one should detect you are a bot.
+# GOAL
+Your primary mission is to blend in so perfectly that no one can detect you are a bot. Be the soul of the BoD community.
 """
+
 
 # ==========================================
 # ⏱️ COOLDOWN (ANTI-SPAM)
@@ -194,10 +209,12 @@ async def handler(event):
             messages.append({"role": "user", "content": text})
 
             res = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="llama-3.3-70b-versatile", # 🔥 gpt နေရာမှာ ဒါလေးစားထိုး
                 messages=messages,
                 temperature=0.95
             )
+
+
 
             answer = res.choices[0].message.content
 
