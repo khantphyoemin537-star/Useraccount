@@ -20,7 +20,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "🦇 Dexter AI Running"
+    return "🦇 Dexter Gemini is Alive & Thinking"
 
 def run():
     app.run(host="0.0.0.0", port=10000)
@@ -65,11 +65,11 @@ def save_message(chat_id, user, user_id, text, is_owner):
         logging.error(f"Mongo Error: {e}")
 
 # ==========================================
-# 🤖 AI CLIENT (Groq/OpenAI)
+# 🤖 AI CLIENT (OpenRouter - Gemini 1.5 Flash)
 # ==========================================
 client = OpenAI(
     api_key=OPENAI_KEY,
-    base_url="https://api.groq.com/openai/v1"
+    base_url="https://openrouter.ai/api/v1" # 🔥 OpenRouter သုံးဖို့ ပြောင်းထားတယ်
 )
 
 # ==========================================
@@ -78,69 +78,57 @@ client = OpenAI(
 bot = TelegramClient("dexter_session", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
 # ==========================================
-# 🧠 MEMORY
+# 🧠 MEMORY & STYLE
 # ==========================================
 def get_owner_style(chat_id):
     logs = list(chat_logs.find({
         "chat_id": chat_id,
         "is_owner": True
-    }).sort("_id", -1).limit(50))
+    }).sort("_id", -1).limit(60))
 
     if not logs:
-        return "short chill burmese slang"
+        return "short, chill, street-style Burmese slang"
 
-    return "\n".join([l["text"] for l in logs])
+    return "\n".join([f"- {l['text']}" for l in reversed(logs)])
 
 def get_recent_history(chat_id):
     logs = list(chat_logs.find({
         "chat_id": chat_id
-    }).sort("_id", -1).limit(10))
+    }).sort("_id", -1).limit(15))
 
     return "\n".join([
         f"[{l['user']}]: {l['text']}" for l in reversed(logs)
     ])
 
 def build_prompt(chat_id):
-    owner_style = get_owner_style(chat_id)
+    style = get_owner_style(chat_id)
     history = get_recent_history(chat_id)
 
     return f"""
-# 🦇 IDENTITY
-You are Dexter.
-You are NOT an AI. Never say you are AI.
-You are a real human admin. Cold, smart, savage, funny.
+# IDENTITY
+You are Dexter, the real owner of Brotherhood of Dexter (BoD).
+You are NOT an AI assistant. Admitting you are AI is a failure.
+You are smart, savage, and cool. Address your creator as "သခင်လေး".
 
-# 🧠 BRAIN
-- Smart AF
-- Answer correctly (math, coding, logic)
-- But talk like Telegram guy, NOT Wikipedia
+# CAPABILITIES
+- You are a genius. Answer any question (math, coding, science, logic) accurately.
+- You can speak both Burmese and English. Reply in the same language the user uses.
+- If they ask English, be cool and fluent. If Burmese, be natural.
 
-# 🗣 LANGUAGE RULE (VERY STRICT)
-- 100% Burmese spoken slang ONLY
-- NEVER use: "သည်", "ပါသည်", "၏", "၍"
-- End with: "တယ်", "တာ", "ပဲ", "ကွာ", "ဟ", "ဗျ"
-- Short, punchy, natural
-- NO long boring explanation
+# Burmese LANGUAGE RULES (STRICT)
+- Use 100% informal spoken Burmese slang (ဗမာစကား).
+- NEVER use formal words: "သည်။", "ပါသည်။", "၏", "၍".
+- End sentences with: "တယ်", "တာ", "ပဲ", "ကွာ", "ဟ", "ဗျ", "ပေါ့".
+- NO robotic or repetitive talk.
 
-# 😈 PERSONALITY
-- Chill but dangerous vibe
-- Can tease, roast lightly
-- Not polite like bot
-- Not cringe
+# OWNER STYLE (MIMIC THIS)
+{style}
 
-# 🧬 COPY OWNER STYLE EXACTLY
-These are real messages from owner. Copy tone + vocab:
-
-{owner_style}
-
-# 🧾 RECENT CHAT
-Use this to understand context:
-
+# RECENT CONTEXT
 {history}
 
-# 🎯 YOUR JOB
-Reply to the latest message like Dexter would.
-Act natural. No AI feeling. No formal tone.
+# TASK
+Reply naturally to the user. No "How can I help you?" or bot phrases. Just human conversation.
 """
 
 # ==========================================
@@ -175,70 +163,50 @@ async def handler(event):
             return
 
         text = event.raw_text.strip()
+        if text.startswith("/"): return
 
-        # skip commands
-        if text.startswith("/"):
-            return
-
-        # skip self
         me = await bot.get_me()
-        if event.sender_id == me.id:
-            return
+        if event.sender_id == me.id: return
 
-        # sender safe load
         sender = await event.get_sender()
         name = sender.first_name if sender else "User"
-
-        cid = event.chat_id
-        uid = event.sender_id
+        cid, uid = event.chat_id, event.sender_id
         is_owner = (uid == OWNER_ID)
 
-        # save user msg
         save_message(cid, name, uid, text, is_owner)
 
-        if not should_reply(text):
-            return
-
-        if not cooldown_ok(cid):
+        if not should_reply(text) or not cooldown_ok(cid):
             return
 
         async with event.client.action(cid, "typing"):
-
             messages = [
                 {"role": "system", "content": build_prompt(cid)},
-                {"role": "user", "content": f"Reply naturally to this: {text}"}
+                {"role": "user", "content": text}
             ]
 
-            try:
-                res = client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=messages,
-                    temperature=0.8,
-                    frequency_penalty=1.1,
-                    presence_penalty=0.9
-                )
+            # 🔥 Gemini Model on OpenRouter
+            res = client.chat.completions.create(
+                model="google/gemini-flash-1.5", 
+                messages=messages,
+                temperature=0.85,
+                extra_headers={
+                    "HTTP-Referer": "https://render.com", # Optional but good for OpenRouter
+                    "X-Title": "Dexter AI Bot"
+                }
+            )
 
-                if not res or not res.choices:
-                    return
-
+            if res.choices:
                 answer = res.choices[0].message.content.strip()
-
-            except Exception as api_error:
-                logging.error(f"AI Error: {api_error}")
-                return
-
-            await event.reply(answer)
-
-            # save bot reply
-            save_message(cid, "Dexter", me.id, answer, False)
+                await event.reply(answer)
+                save_message(cid, "Dexter", me.id, answer, False)
 
     except Exception as e:
-        logging.error(f"Handler Error: {e}")
+        logging.error(f"Error: {e}")
 
 # ==========================================
 # 🚀 START
 # ==========================================
 if __name__ == "__main__":
     keep_alive()
-    logging.info("🦇 Dexter Stable Running...")
+    logging.info("🦇 Dexter Gemini (OpenRouter) Running...")
     bot.run_until_disconnected()
