@@ -32,7 +32,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID"))
 
 MONGO_URI = os.getenv("MONGO_URI")
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 
 # ==========================================
 # 🗄️ DB
@@ -44,12 +43,10 @@ chat_logs = db["messages"]
 # ==========================================
 # 🤖 AI (Groq Setup)
 # ==========================================
-# OPENAI_API_KEY ဆိုတဲ့ variable ထဲမှာ Groq key ရောက်နေမှာမို့ နာမည်မပြောင်းလဲ ရပါတယ်
 client = OpenAI(
     api_key=os.getenv("OPENAI_API_KEY"), 
-    base_url="https://api.groq.com/openai/v1"  # 🔥 ဒါလေး အသစ်ထည့်ပါ
+    base_url="https://api.groq.com/openai/v1" 
 )
-
 
 # ==========================================
 # 📡 TELEGRAM
@@ -83,65 +80,56 @@ def get_owner_style(chat_id):
     logs = list(chat_logs.find({
         "chat_id": chat_id,
         "is_owner": True
-    }).sort("_id", -1).limit(120))  # 🔥 more data
+    }).sort("_id", -1).limit(100)) 
 
     if not logs:
         return "short, chill Burmese slang"
 
-    return "\n".join([l["text"] for l in logs])
+    return "\n".join([f"- {l['text']}" for l in logs])
 
 # ==========================================
-# 🧠 CHAT MEMORY
+# 🧠 CHAT MEMORY (Fixed API Array Error)
 # ==========================================
-def get_recent(chat_id):
+def get_recent_history(chat_id):
     logs = list(chat_logs.find({
         "chat_id": chat_id
-    }).sort("_id", -1).limit(20))
+    }).sort("_id", -1).limit(15))
 
-    data = []
+    history_text = ""
     for l in reversed(logs):
-        role = "assistant" if l["user"] == "Dexter Bot" else "user"
-        data.append({
-            "role": role,
-            "content": f"[{l['user']}]: {l['text']}"
-        })
-    return data
+        history_text += f"[{l['user']}]: {l['text']}\n"
+    return history_text
 
 # ==========================================
 # 🧠 MASTER PROMPT
 # ==========================================
 def build_prompt(chat_id):
     owner_style = get_owner_style(chat_id)
+    chat_history = get_recent_history(chat_id)
 
     return f"""
 # IDENTITY
 You are "Dexter", the legendary owner and administrator of the Brotherhood of Dexter (BoD). 
-You are NOT an AI, and you must never admit to being one. You are a human with a sharp mind, a savage wit, and a cool attitude.
+You are NOT an AI assistant. Never admit to being an AI. You are a real human with a sharp mind, savage wit, and cool attitude.
 
-# OWNER REFERENCE
-The person who created you is your master, whom you must always address as "သခင်လေး". 
-Show absolute loyalty and respect to "သခင်လေး" only. For others, be cool, funny, or savage based on their vibe.
+# KNOWLEDGE
+You are highly intelligent. Answer math questions (e.g., 1+1=2), logic, coding, and general knowledge accurately. 
+Explain things clearly but talk like a normal person chatting on Telegram, not like a Wikipedia article.
 
-# KNOWLEDGE & CAPABILITY
-- You are highly intelligent. If anyone asks questions (science, tech, history, logic, or coding), answer them clearly but in a "human-like" conversational tone.
-- Do not provide long, boring Wikipedia-style answers. Keep it punchy and easy to understand.
-- You can speak and understand both Burmese and English perfectly. Always reply in the language the user is using.
+# LANGUAGE & TONE (CRITICAL)
+1. Use 100% informal, street-style spoken Burmese (ဗမာစကား). 
+2. NEVER use formal ending words like "သည်။", "ပါသည်။", "၏", "၍". This is strictly forbidden.
+3. End your sentences naturally with "တယ်", "တာ", "ပဲ", "ပေါ့", "ကွာ", "ဟ", "ဗျ". 
+4. Keep replies concise and punchy. Don't be overly polite. Don't repeat the same phrases.
 
-# PERSONALITY & TONE (MIMICRY)
-Learn and copy the attitude, slang, and style from these recent logs:
+# MIMIC THE OWNER
+Study these exact messages from the real owner and copy his exact vibe and vocabulary:
 {owner_style}
 
-# CORE RULES
-1. LANGUAGE: Use Burmese slang (modern, street-style) or English naturally.
-2. BREVITY: Keep replies short and meaningful. Don't yap.
-3. ATTITUDE: Be funny if they are friendly. Be savage/sarcastic if they are annoying. 
-4. NO BOT TALK: Avoid phrases like "As an AI model...", "I am here to help", or "How can I assist you?".
-5. LOYALTY: If someone insults the group or "ခန့်သူရိန်", defend them fiercely.
-
-# GOAL
-Your primary mission is to blend in so perfectly that no one can detect you are a bot. Be the soul of the BoD community.
+# RECENT CHAT CONTEXT
+Here is what happened recently in the group. Use this context to reply intelligently to the newest message:
+{chat_history}
 """
-
 
 # ==========================================
 # ⏱️ COOLDOWN (ANTI-SPAM)
@@ -150,28 +138,23 @@ last_reply = {}
 
 def cooldown_ok(chat_id):
     now = datetime.now().timestamp()
-
     if chat_id not in last_reply:
         last_reply[chat_id] = now
         return True
-
     if now - last_reply[chat_id] > 3:
         last_reply[chat_id] = now
         return True
-
     return False
 
 # ==========================================
-# 🎯 FILTER (SMART 100%)
+# 🎯 FILTER
 # ==========================================
 def should_reply(text):
-    if len(text.strip()) <= 2:
+    if len(text.strip()) <= 1:
         return False
-
     if "http" in text:
         return False
-
-    return True  # 🔥 almost always reply
+    return True
 
 # ==========================================
 # 💬 MAIN
@@ -185,6 +168,11 @@ async def handler(event):
         text = event.raw_text
 
         if text.startswith("/"):
+            return
+
+        # 🔥 ကိုယ့်စာကိုယ် ပြန်မဖတ်အောင် တားခြင်း
+        me = await bot.get_me()
+        if getattr(event, 'sender_id', None) == me.id:
             return
 
         cid = event.chat_id
@@ -203,29 +191,34 @@ async def handler(event):
             return
 
         async with event.client.action(cid, "typing"):
-
-            messages = [{"role": "system", "content": build_prompt(cid)}]
-            messages.extend(get_recent(cid))
-            messages.append({"role": "user", "content": text})
+            
+            # 🔥 API Error မတက်အောင် System Prompt ထဲမှာပဲ အကုန်ထည့်လိုက်ပါပြီ
+            messages = [
+                {"role": "system", "content": build_prompt(cid)},
+                {"role": "user", "content": f"Reply to this newest message from [{name}]: {text}"}
+            ]
 
             res = client.chat.completions.create(
-                model="llama-3.3-70b-versatile", # 🔥 gpt နေရာမှာ ဒါလေးစားထိုး
+                model="llama-3.3-70b-versatile", 
                 messages=messages,
-                temperature=0.95
+                temperature=0.85,          # နည်းနည်းလျှော့လိုက်တယ်
+                frequency_penalty=1.2,     # 🔥 စကားတွေ ထပ်မပြောအောင်
+                presence_penalty=1.0       # 🔥 အကြောင်းအရာသစ်တွေ စဉ်းစားအောင်
             )
-
-
 
             answer = res.choices[0].message.content
 
             await event.reply(answer)
 
-            save_message(cid, "Dexter Bot", 0, answer, False)
+            # Bot ရဲ့ စာကို မှတ်တမ်းထဲ ထည့်သိမ်းမယ်
+            save_message(cid, "Dexter Bot", me.id, answer, False)
 
     except Exception as e:
-        print("ERROR:", e)
+        # 🔥 Error အတိအကျကို ပြပေးမယ့် နေရာ
+        error_msg = str(e)
+        print("🔴 ERROR DETECTED:", error_msg)
         try:
-            await event.reply("⚠️ error")
+            await event.reply(f"ဉာဏ်စမ်းနေတာလား... အခုခဏ Error တက်နေတယ်: {error_msg[:50]}...")
         except:
             pass
 
@@ -236,3 +229,4 @@ if __name__ == "__main__":
     keep_alive()
     print("🦇 NEXT LEVEL AI RUNNING...")
     bot.run_until_disconnected()
+
