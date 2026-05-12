@@ -1,6 +1,3 @@
 telethon
 pymongo
-openai
-flask
-google-generativeai
-
+dnspython
