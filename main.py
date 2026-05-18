@@ -16,7 +16,7 @@ MONGO_URI = "mongodb+srv://khantphyoemin537_db_user:9VRKiaeZkz7rJdpz@cluster0.w6
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8338525059:AAEMDI6gBX0hzcCozymzVV7EmgDeh_73jeA")
 
 # 🔑 Chief ပေးထားသော String Session အသစ်ကို တိုက်ရိုက် Hardcode ထည့်သွင်းထားသည် fr
-STRING_SESSION = "1BVtsOIMBu7sFste9mzJP0evgBY40VOBd7PIxjaHd4Y8tLInNDGqkc98fRuF6lNV5_llUe7WW4zMaH_j9tTM9-CUHkPeaU0JCjDWzGsHJQmPT_aetRvziXNdItpQqh0xxqFjGDuhXE9pZ--hDn9usQUBvYfEX0R5-kttaC0Aic-OQxOnN-esT-y_hLgRkBwYAzA7n9UTn09gHYvYN9RV1ClCzCuY7TQEJmrYX9S-MoQ5TTD70QWOMB0L4lo2KgpSD0oqlFoYVKcXR8sOcTfBmsQr76ZfXkW_nHq7f_smdHeVZpLvCLvD7LKy2j5_U1zPthd0woT1emrShk9aY_puQPGUBlH15DYw="
+STRING_SESSION = "1BVtsOIMBu1vvUQ9HxhF5Iz20uFR3WUPDolInDQvopGH1JiYRgR5tooW62AeOmVkqX6q3BbsI6J9UR2bc2jG8-RXiA_VKhU2qDG5fPU4cPYmqed7jGB5UVVruoPs6thc5dxrc3la1oohu-GVfOvi4G-Y8ebmWy1-4vLKVW-rvYU61WUBiqiE7oG_EPZF0wtFciyUWwg3khRnuuxjKFGQRv-jAMGSb9GA9ENbslknwNEs7oDejT9IBt7WbH38U2B7196nQr4aFNUBtmSzAiL87Ab1ZevNFJaH27pMp-nj8a3a-ukWkZziLK40i2ft_xcyyBwitQyDo9sxaQVGXbKR_lCh71OOYpFI="
 
 # MongoDB Setup
 db_client = MongoClient(MONGO_URI)
@@ -101,12 +101,12 @@ async def start_spam(event):
             db_text = get_random_text()
             spam_msg = f"{mention} {db_text}" if mention else db_text
             await client.send_message(chat_id, spam_msg, parse_mode='html')
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
         except:
             break
 
 # ရပ်လိုက်မယ်
-@bot1.on(events.NewMessage(pattern=r'^ရပ်လိုက်မယ်$'))
+@bot1.on(events.NewMessage(pattern=r'^ဖာသည်မသား$'))
 async def stop_spam(event):
     if event.sender_id != OWNER_ID: return
     is_running[event.chat_id] = False
