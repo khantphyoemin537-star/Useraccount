@@ -26,7 +26,7 @@ is_adding_contacts = False
 user_cooldowns = {}
 is_talker_active = False       
 message_count = 0
-spam_tasks = {} 
+spam_tasks = {}
 
 # MongoDB Setup
 client_mongo = AsyncIOMotorClient(MONGO_URI)
@@ -34,7 +34,7 @@ db = client_mongo["telegram_bot"]
 reply_save_col = db["reply_save_col"]
 target_bots_col = db["target_bots"]  
 config_col = db["config_col"]
-talk_col = db["random_talk"]
+talk_col = db["random_talk"]   
 filters_col = db["filters"]
 
 # Initialize Official Bot Client
@@ -45,7 +45,7 @@ userbot = None
 # 🌍 DUMMY HTTP SERVER FOR RENDER HEALTH CHECK
 # ==========================================
 async def handle_render_health_check(reader, writer):
-    data = await reader.read(100)
+    await reader.read(100)
     response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK"
     writer.write(response.encode('utf-8'))
     await writer.drain()
@@ -66,13 +66,13 @@ async def start_dummy_web_server():
 # ==========================================
 async def delete_bot_message_delayed(event, bot_msg_id, cmd_msg_id=0):
     try:
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
         to_delete = [bot_msg_id]
         if cmd_msg_id:
             to_delete.append(cmd_msg_id)
             
         await event.client.delete_messages(event.chat_id, to_delete)
-        print(f"🗑️ Auto-deleted message {bot_msg_id} after 4s delay.")
+        print(f"🗑️ Auto-deleted message {bot_msg_id} after delay.")
         
     except errors.rpcerrorlist.FloodWaitError as e:
         print(f"⚠️ FloodWait Caught! Must wait {e.seconds} seconds.")
@@ -90,54 +90,74 @@ async def delete_bot_message_delayed(event, bot_msg_id, cmd_msg_id=0):
 async def run_raid_spam_task(event, reply_msg_id, chat_id):
     try:
         while True:
-            # filters_col ထဲကနေ စာတစ်ကြောင်းကို Random နှိုက်မယ်
             pipeline = [{"$sample": {"size": 1}}]
             cursor = filters_col.aggregate(pipeline)
             docs = await cursor.to_list(length=1)
             
             if docs:
-                # DB ထဲက text သို့မဟုတ် word field ထဲကစာကို ယူမယ် (မရှိရင် Default စာသားသုံးမယ်)
                 reply_text = docs[0].get("text") or docs[0].get("word") or "🎯"
-                
                 try:
-                    # Target ပြုလုပ်ထားသူရဲ့ စာကို ကွက်တိ Reply ပြန်ပြီး စာပို့မည်
                     await event.client.send_message(
                         chat_id, 
                         reply_text, 
                         reply_to=reply_msg_id
                     )
-                    # 1 စက္ကန့် တိတိ စောင့်ဆိုင်းမည်
                     await asyncio.sleep(1.0)
                     
                 except errors.rpcerrorlist.FloodWaitError as e:
-                    # Telegram က ကန့်သတ်ချက်မိရင် စက္ကန့်အလိုက် ခေတ္တရပ်စောင့်ပြီး အလုပ်ပြန်လုပ်မည့်စနစ်
-                    print(f" {e.seconds} ")
+                    print(f"⚠️ FloodWait မိသွားသဖြင့် {e.seconds} စက္ကန့် စောင့်ဆိုင်းနေသည်။")
                     await asyncio.sleep(e.seconds)
                 except Exception as e:
                     print(f"❌ Spam Error: {e}")
                     await asyncio.sleep(1.0)
             else:
-                # DB ထဲမှာ စာမရှိသေးရင် Error မတက်အောင် ၂ စက္ကန့်ခြားပြီး ပြန်စစ်မည်
                 await asyncio.sleep(2.0)
                 
     except asyncio.CancelledError:
-        print(f"🛑 Chat ID: {chat_id} တွင် Raid လုပ်ငန်းစဉ်ကို အောင်မြင်စွာ ရပ်တန့်လိုက်ပါပြီ။")
-    except Exception as e:
-        print(f"❌ Task Error: {e}")
+        print(f"🛑 Chat ID: {chat_id} တွင် Raid လုပ်ငန်းစဉ် ရပ်တန့်ပြီး။")
 
 # ==========================================
-# 🧠 USERBOT EVENT HANDLER (AUTO-REPLY - ULTRA UPGRADED)
+# 🧠 USERBOT EVENT HANDLER (COLLECTIVE & RAID SYSTEM)
 # ==========================================
 async def handle_userbot_reply(event):
-    global is_active, user_cooldowns, is_talker_active, message_count
+    global is_active, user_cooldowns, is_talker_active, message_count, spam_tasks
     
     if not event.message or event.message.text is None:
+        return
+
+    cmd = event.message.text.strip()
+
+    # ------------------------------------------------------------------------
+    # ⚔️ USERBOT RAID COMMANDS (Chief ကိုယ်တိုင် ဘယ် Chat မှာမဆို သုံးနိုင်မည့်စနစ်)
+    # ------------------------------------------------------------------------
+    if event.out:  
+        if cmd == "သေမယ်နော်" and event.is_reply:
+            if event.chat_id in spam_tasks:
+                spam_tasks[event.chat_id].cancel()
+                
+            reply_msg = await event.get_reply_message()
+            task = asyncio.create_task(run_raid_spam_task(event, reply_msg.id, event.chat_id))
+            spam_tasks[event.chat_id] = task
+            
+            await event.delete()  
+            return
+            
+        elif cmd == "ဖာသည်မသား":
+            if event.chat_id in spam_tasks:
+                spam_tasks[event.chat_id].cancel()
+                del spam_tasks[event.chat_id]
+                
+            await event.delete()  
+            return
+
+    # 🛡️ ကျန်တဲ့ Auto-Reply / Talker စနစ်များကို သတ်မှတ်ထားတဲ့ Group တစ်ခုတည်းမှာပဲ အလုပ်လုပ်စေရန် Lock ခတ်ခြင်း
+    if event.chat_id != SPECIFIC_GROUP:
         return
 
     # ------------------------------------------------------------------------
     # 🎯 Bot ID ကို Auto-Delete စာရင်းထဲ သွင်းခြင်း
     # ------------------------------------------------------------------------
-    if event.sender_id == OWNER_ID and event.message.text.strip() == "/ဖျက်မည်":
+    if event.sender_id == OWNER_ID and cmd == "/ဖျက်မည်":
         if event.is_reply:
             reply_msg = await event.get_reply_message()
             reply_sender = await reply_msg.get_sender()
@@ -149,23 +169,19 @@ async def handle_userbot_reply(event):
                     {"$set": {"bot_id": bot_id, "username": reply_sender.username}},
                     upsert=True
                 )
-                await event.reply(f"🎯 Bot ID: `{bot_id}` (@{reply_sender.username}) ကို မှတ်ပြီးပါပြီ။ ၄ စက္ကန့်အတွင်း အလိုအလျောက် ရှင်းလင်းပေးပါတော့မယ်!")
+                await event.reply(f"🎯 Bot ID: `{bot_id}` (@{reply_sender.username}) ကို မှတ်ပြီးပါပြီ။")
                 asyncio.create_task(delete_bot_message_delayed(event, reply_msg.id, event.id))
                 return
 
-    # ------------------------------------------------------------------------
-    # 🤖 Target Bot ဟုတ်မဟုတ် စစ်ပြီး ဖျက်ခြင်း
-    # ------------------------------------------------------------------------
     sender = await event.get_sender()
+    # 🤖 Target Bot ဟုတ်မဟုတ် စစ်ပြီး ဖျက်ခြင်း
     if sender and sender.bot:
         is_target = await target_bots_col.find_one({"bot_id": event.sender_id})
         if is_target:
             asyncio.create_task(delete_bot_message_delayed(event, event.id, 0))
             return
 
-    # ------------------------------------------------------------------------
     # 🗣️ Talker စနစ် (Every 6 messages -> Send 1 random DB line)
-    # ------------------------------------------------------------------------
     if is_talker_active:
         if event.out or (sender and sender.bot):
             return
@@ -175,17 +191,14 @@ async def handle_userbot_reply(event):
             return
 
         message_count += 1
-
-        if message_count >= 10:
+        if message_count >= 6:
             message_count = 0
             pipeline = [{"$sample": {"size": 1}}]
             cursor = talk_col.aggregate(pipeline)
             random_docs = await cursor.to_list(length=1)
 
             if random_docs:
-                doc = random_docs[0]
-                reply_text = doc.get("text")
-                
+                reply_text = random_docs[0].get("text")
                 if reply_text:
                     try:
                         await event.client.send_read_acknowledge(event.chat_id, max_id=event.id)
@@ -197,13 +210,8 @@ async def handle_userbot_reply(event):
                         print(f"❌ Talker Error: {e}")
             return
 
-    # ------------------------------------------------------------------------
-    # 💬 ညှိနှိုင်းပြင်ဆင်ထားသော Auto-Reply Logic (စာမထပ်အောင် ပုံစံသစ်ပြောင်းလဲထားမှု)
-    # ------------------------------------------------------------------------
-    if not is_active:
-        return
-
-    if event.out or (sender and sender.bot):
+    # 💬 Auto-Reply Logic
+    if not is_active or event.out or (sender and sender.bot):
         return
 
     user_text = event.message.text.strip().lower()
@@ -219,17 +227,14 @@ async def handle_userbot_reply(event):
 
     try:
         reply_text = None
-
-        # 🔥 အဆင့် (၁) - စာသားပါဝင်မှုကို Regex အသုံးပြု၍ ရှာဖွေပြီး ကိုက်ညီသမျှထဲမှ Random နှိုက်ခြင်း
-        # စာလုံးအလွန်တိုလွန်းသော Trigger အမှိုက်များကို ဤနေရာတွင် စစ်ထုတ်ထားပါသည် (စာလုံးအရှည် ၃ လုံးနှင့်အထက်မှသာ ယူမည်)
         match_pipeline = [
             {"$match": {
                 "$and": [
-                    {"$expr": {"$gte": [{"$strLenCP": "$trigger"}, 3]}},  # 👈 Trigger စာလုံးအရှည် ၃ လုံးအထက်ကိုပဲ စစ်မယ်
-                    {"trigger": {"$regex": user_text, "$options": "i"}}   # 👈 လူရိုက်တဲ့စာထဲမှာ ကိုက်ညီတာကို စမတ်ကျကျရှာမယ်
+                    {"$expr": {"$gte": [{"$strLenCP": "$trigger"}, 3]}},
+                    {"trigger": {"$regex": user_text, "$options": "i"}}
                 ]
             }},
-            {"$sample": {"size": 1}}  # 👈 ကိုက်ညီတဲ့စာရင်းထဲကမှ ၁ ခုကို ထပ်မံ Random နှိုက်ပေးမည်
+            {"$sample": {"size": 1}}
         ]
         
         cursor_match = reply_save_col.aggregate(match_pipeline)
@@ -238,8 +243,7 @@ async def handle_userbot_reply(event):
         if matched_docs and matched_docs[0].get("responses"):
             reply_text = random.choice(matched_docs[0]["responses"])
         else:
-            # 🎯 နေရာတကာ လိုက်မအော်ဘဲ ၄၀% အခွင့်အရေးဖြင့် DB ထဲကစာများကို Random ပတ်ထောက်မည့်စနစ်
-            if random.random() < 0.20:  
+            if random.random() < 0.40:  
                 pipeline_fallback = [{"$sample": {"size": 1}}]
                 cursor_fallback = reply_save_col.aggregate(pipeline_fallback)
                 random_docs = await cursor_fallback.to_list(length=1)
@@ -253,7 +257,6 @@ async def handle_userbot_reply(event):
             else:
                 return
 
-        # စာသားထွက်လာရင် စာဖတ်ပြီး Voice Action ပြကာ Reply ပြန်ပေးမည်
         if reply_text:
             await event.client.send_read_acknowledge(event.chat_id, max_id=event.id)
             async with event.client.action(event.chat_id, 'voice'):
@@ -262,7 +265,6 @@ async def handle_userbot_reply(event):
 
     except Exception as e:
         print(f"❌ Auto-Reply Error: {e}")
-
 
 # ==========================================
 # 📥 USERBOT SCRAPING TASK (Emoji Preserved & 50,000 Limit)
@@ -279,8 +281,8 @@ async def scrape_history_task():
     try:
         msg_cache = {}
         total_saved = 0
-        TARGET_LIMIT = 50000    # 👈 Chief တောင်းဆိုချက်အရ 50,000 သို့ ပြောင်းလဲထားပါသည်
-        FETCH_LIMIT = 100000     # Target ပြည့်ရန် သင့်တော်သော လှမ်းဖတ်မှုပမာဏ
+        TARGET_LIMIT = 50000    
+        FETCH_LIMIT = 100000     
 
         try:
             async for msg in userbot.iter_messages(SPECIFIC_GROUP, limit=FETCH_LIMIT):
@@ -302,9 +304,8 @@ async def scrape_history_task():
                     if parent_text and reply_text:
                         trigger = parent_text.lower()
                         
-                        # 🛡️ basic filtering (Command စာလုံးများ နှင့် လင့်ခ်များကိုသာ ကျော်မည်)
-                        if (trigger.startswith(('/', '.', 'မှတ်', 'reply','@')) or 
-                            reply_text.startswith(('/', '.', 'မှတ်', 'reply','@')) or 
+                        if (trigger.startswith(('/', '.', 'မှတ်', 'reply')) or 
+                            reply_text.startswith(('/', '.', 'မှတ်', 'reply')) or 
                             "http" in trigger or "http" in reply_text or "@" in trigger):
                             continue
 
@@ -320,7 +321,7 @@ async def scrape_history_task():
                             await reply_save_col.insert_one({"trigger": trigger, "responses": [reply_text]})
                             total_saved += 1
 
-                        if total_saved % 10000 == 0:
+                        if total_saved % 100 == 0:
                             await bot.send_message(SPECIFIC_GROUP, f"🚀 စာစောင် ပေါင်း {total_saved} ခု DB ထဲ မှတ်ပြီးပါပြီ!")
                         
                         await asyncio.sleep(0.04)  
@@ -437,7 +438,7 @@ async def handle_bot_commands(event):
                 {"$set": {"value": session_str}},
                 upsert=True
             )
-            await event.reply("✅ String Session ကို DB မှာ သိမ်းပြီးပါပြီ။ Userbot ချိတ်ဆက်နေသည်...")
+            await event.reply("✅ String Session ကို DB မှာ သိမ်းပြီးပါပြီ။ Userbot ချက်ဆက်နေသည်...")
             
             try:
                 if userbot:
@@ -445,7 +446,7 @@ async def handle_bot_commands(event):
                 userbot = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
                 await userbot.start()
                 await userbot.get_dialogs()
-                userbot.add_event_handler(handle_userbot_reply, events.NewMessage(chats=SPECIFIC_GROUP))
+                userbot.add_event_handler(handle_userbot_reply, events.NewMessage())
                 await event.reply("🚀 Userbot is Live!")
             except Exception as e:
                 await event.reply(f"❌ Userbot အလုပ်မလုပ်ပါ: {e}")
@@ -479,27 +480,6 @@ async def handle_bot_commands(event):
             await event.reply("⚠️ လူထည့်ခြင်းလုပ်ငန်းစဉ် နောက်ကွယ်မှာ လုပ်ဆောင်နေဆဲဖြစ်သည်!")
             return
         asyncio.create_task(add_contacts_task())
-    # ------------------------------------------------------------------------
-    # ⚔️ Raid / Spam Attack Commands (သေမယ်နော် & ဖာသည်မသား)
-    # ------------------------------------------------------------------------
-    if cmd == "သေမယ်နော်" and event.is_reply:
-        # အကယ်၍ လက်ရှိ Chat ထဲမှာ အလုပ်လုပ်နေတဲ့ Task ရှိနေရင် အရင်ပိတ်ပစ်မယ်
-        if event.chat_id in spam_tasks:
-            spam_tasks[event.chat_id].cancel()
-            
-        reply_msg = await event.get_reply_message()
-        
-        # Background မှာ Task အသစ်တစ်ခုအနေနဲ့ ဒုန်းစိုင်း run ခိုင်းလိုက်ခြင်း
-        task = asyncio.create_task(run_raid_spam_task(event, reply_msg.id, event.chat_id))
-        spam_tasks[event.chat_id] = task
-        # Chief တောင်းဆိုချက်အရ စက်ကွင်းစတင်ရန် ဘာ reply မှ ပြန်မအော်ပါ
-
-    elif cmd == "ဖာသည်မသား":
-        # အော်လိုက်တာနဲ့ လက်ရှိ Chat ထဲက ပတ်နေတဲ့ Task ကို ရှာပြီး ချက်ချင်း ရပ်ပစ်မည်
-        if event.chat_id in spam_tasks:
-            spam_tasks[event.chat_id].cancel()
-            del spam_tasks[event.chat_id]
-        # ရပ်တန့်ရန်အတွက်လည်း ဘာ reply မှ ပြန်မအော်ပါ
 
 # ==========================================
 # 🚀 SYSTEM STARTUP LOGIC
@@ -509,6 +489,14 @@ async def startup():
     print("⏳ System starting up and loading configurations from MongoDB...")
     
     asyncio.create_task(start_dummy_web_server())
+
+    # 🧹 DB ထဲရှိပြီးသား အမှိုက်စာလုံးတိုများ (Trigger အရှည် ၂ လုံးအောက်) ကို အလိုအလျောက် သန့်ရှင်းရေးလုပ်ခြင်း
+    try:
+        deleted = await reply_save_col.delete_many({"$expr": {"$lt": [{"$strLenCP": "$trigger"}, 3]}})
+        if deleted.deleted_count > 0:
+            print(f"🧹 Cleaned up {deleted.deleted_count} short garbage triggers from DB.")
+    except Exception as clean_err:
+        print(f"⚠️ DB Cleanup Warning: {clean_err}")
 
     status_doc = await config_col.find_one({"key": "bot_status"})
     if status_doc and status_doc.get("value") == "active":
@@ -522,7 +510,7 @@ async def startup():
             userbot = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
             await userbot.start()
             await userbot.get_dialogs()
-            userbot.add_event_handler(handle_userbot_reply, events.NewMessage(chats=SPECIFIC_GROUP))
+            userbot.add_event_handler(handle_userbot_reply, events.NewMessage())
             print("🚀 Userbot Session Successfully Loaded from DB!")
         except Exception as e:
             print(f"⚠️ Failed to load existing Userbot Session: {e}")
