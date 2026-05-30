@@ -29,15 +29,17 @@ message_count = 0  # 👈 Counter to track chat messages
 client_mongo = AsyncIOMotorClient(MONGO_URI)
 db = client_mongo["telegram_bot"]
 reply_save_col = db["reply_save_col"]
-target_bots_col = db["target_bots"]  # 👈 Auto-Delete လုပ်မည့် Bot ID များ သိမ်းဆည်းရန်
+target_bots_col = db["target_bots"]  
 config_col = db["config_col"]
-talker_col = db["talker"]      # 👈 Talker စကားစုများရှိမည့် Collection
-is_talker_active = False       # 👈 /ပြောမယ် နှင့် /မပြောဘူး အတွက် Flag
+talk_col = db["random_talk"]   # 👈 ပြင်ဆင်ချက် (၁) - တကယ့် စကားစုစာသားများရှိမည့် Collection အမှန်သို့ ပြောင်းလဲခြင်း
+is_talker_active = False       
+message_count = 0
 
 
 # Initialize Official Bot Client
 bot = TelegramClient('official_bot_session', APP_ID, APP_HASH)
 userbot = None  # String Session ရမှ ဖွင့်မည်
+
 # ==========================================
 # 🌍 DUMMY HTTP SERVER FOR RENDER HEALTH CHECK (ဝဘ်ဆိုက်အတုဖွင့်ခြင်း)
 # ==========================================
@@ -90,7 +92,8 @@ async def delete_bot_message_delayed(event, bot_msg_id, cmd_msg_id=0):
 # 🧠 USERBOT EVENT HANDLER (AUTO-REPLY & DELETE)
 # ==========================================
 async def handle_userbot_reply(event):
-    global is_active, user_cooldowns
+    # ပြင်ဆင်ချက် (၂) - message_count ကိုပါ ထိပ်ဆုံးမှာ တစ်ခါတည်း Global ကြေညာပေးလိုက်တာ ပိုစိတ်ချရပါတယ်
+    global is_active, user_cooldowns, is_talker_active, message_count
     
     # ------------------------------------------------------------------------
     # 🎯 အပိုင်း (၁) - Bot ID ကို အမြဲတမ်း Auto-Delete စာရင်းထဲ သွင်းခြင်း (Reply ပြီး /ဖျက်မည် ဟု ရိုက်ပါက)
@@ -102,7 +105,7 @@ async def handle_userbot_reply(event):
             
             if reply_sender and reply_sender.bot:
                 bot_id = reply_sender.id
-                # DB ထဲမှာ ဒီ Bot ID ကို အမြဲတမ်း မှတ်ထားလိုက်ခြင်း
+                # DB ထဲမှာ ဒီ Bot ID ကို အမြဲတမ်း  မှတ်ထားလိုက်ခြင်း
                 await target_bots_col.update_one(
                     {"bot_id": bot_id},
                     {"$set": {"bot_id": bot_id, "username": reply_sender.username}},
@@ -126,13 +129,10 @@ async def handle_userbot_reply(event):
             asyncio.create_task(delete_bot_message_delayed(event, event.id, 0))
             return
 
-        # ------------------------------------------------------------------------
+    # ------------------------------------------------------------------------
     # 🗣️ Talker စနစ် (Every 5 messages -> Send 1 random DB line without reply)
     # ------------------------------------------------------------------------
     if is_talker_active:
-        global message_count
-        
-        sender = await event.get_sender()
         if event.out or (sender and sender.bot):
             return
 
@@ -140,41 +140,37 @@ async def handle_userbot_reply(event):
         if not user_text:
             return
 
-        # Increment message counter for every incoming chat message
+        # Counter ကို တစ်တိုးမယ်
         message_count += 1
 
-        # Check if 5 messages are reached
-        if message_count < 5:
-            return
+        # စာ ၅ ကြောင်း ပြည့်၊ မပြည့် စစ်မယ်
+        if message_count >= 5:
+            # ပြည့်တာနဲ့ Counter ကို ၀ ချက်ချင်းပြန်လုပ်မယ်
+            message_count = 0
 
-        # Reset counter immediately once triggered
-        message_count = 0
+            # ပြင်ဆင်ချက် (၃) - talk_col (random_talk) ထဲကနေ စာသားလှမ်းနှိုက်ခြင်း
+            pipeline = [{"$sample": {"size": 1}}]
+            cursor = talk_col.aggregate(pipeline)
+            random_docs = await cursor.to_list(length=1)
 
-        # Fetch 1 random document from talker collection
-        pipeline = [{"$sample": {"size": 1}}]
-        cursor = talker_col.aggregate(pipeline)
-        random_docs = await cursor.to_list(length=1)
-
-        if random_docs:
-            doc = random_docs[0]
-            reply_text = doc.get("text") or (random.choice(doc.get("responses")) if doc.get("responses") else None)
-            
-            if not reply_text:
-                return
-            
-            try:
-                # Mark as read
-                await event.client.send_read_acknowledge(event.chat_id, max_id=event.id)
+            if random_docs:
+                doc = random_docs[0]
+                reply_text = doc.get("text")
                 
-                # Human-like typing delay based on string length
-                typing_delay = max(2.0, min(len(reply_text) * 0.1, 5.0))
-                async with event.client.action(event.chat_id, 'typing'):
-                    await asyncio.sleep(typing_delay)
+                if reply_text:
+                    try:
+                        # Seen ပြပေးမယ်
+                        await event.client.send_read_acknowledge(event.chat_id, max_id=event.id)
+                        
+                        # စာလုံးအရှည်အလိုက် သဘာဝကျကျ စာရိုက်သလို Delay ပေးမယ်
+                        typing_delay = max(2.0, min(len(reply_text) * 0.1, 5.0))
+                        async with event.client.action(event.chat_id, 'typing'):
+                            await asyncio.sleep(typing_delay)
 
-                # Send a plain message to the group (.respond instead of .reply)
-                await event.respond(reply_text)
-            except Exception as e:
-                print(f"❌ Talker Error: {e}")
+                        # Reply မထောက်ဘဲ Group ထဲ စာလှမ်းပစ်မယ်
+                        await event.respond(reply_text)
+                    except Exception as e:
+                        print(f"❌ Talker Error: {e}")
             return
 
     # ------------------------------------------------------------------------
@@ -183,44 +179,6 @@ async def handle_userbot_reply(event):
     if not is_active:
         return
 
-    if event.out or (sender and sender.bot):
-        return
-
-    user_text = event.message.text.strip().lower()
-    if not user_text:
-        return
-
-    user_id = event.sender_id
-    current_time = time.time()
-    if user_id in user_cooldowns and (current_time - user_cooldowns[user_id] < COOLDOWN_TIME):
-        return
-
-    matched_doc = await reply_save_col.find_one({
-        "$expr": {
-            "$gt": [{"$indexOfCP": [user_text, "$trigger"]}, -1]
-        }
-    })
-
-    if matched_doc:
-        user_cooldowns[user_id] = current_time
-        try:
-            await event.client.send_read_acknowledge(event.chat_id, max_id=event.id)
-            async with event.client.action(event.chat_id, 'typing'):
-                await asyncio.sleep(random.uniform(2.5, 5.0))
-
-            reply_text = random.choice(matched_doc["responses"])
-            await event.reply(reply_text)
-        except Exception as e:
-            print(f"❌ Userbot Reply Error: {e}")
-
-
-    # ------------------------------------------
-    # 🤖 အောက်ကအပိုင်းကတော့ မူရင်း Auto-Reply Logic ဖြစ်ပါတယ်
-    # ------------------------------------------
-    if not is_active:
-        return
-
-    sender = await event.get_sender()
     if event.out or (sender and sender.bot):
         return
 
@@ -320,7 +278,6 @@ async def scrape_history_task():
 # ==========================================
 @bot.on(events.NewMessage(chats=SPECIFIC_GROUP))
 async def handle_bot_commands(event):
-    #  👇 ဒီနေရာမှာ is_talker_active ကို global အဖြစ် ထည့်ပေးရပါမယ်
     global is_active, userbot, is_scraping, is_talker_active 
     
     if event.sender_id != OWNER_ID:
