@@ -26,6 +26,7 @@ is_adding_contacts = False
 user_cooldowns = {}
 is_talker_active = False       
 message_count = 0
+spam_tasks = {} 
 
 # MongoDB Setup
 client_mongo = AsyncIOMotorClient(MONGO_URI)
@@ -33,7 +34,8 @@ db = client_mongo["telegram_bot"]
 reply_save_col = db["reply_save_col"]
 target_bots_col = db["target_bots"]  
 config_col = db["config_col"]
-talk_col = db["random_talk"]   
+talk_col = db["random_talk"]
+filters_col = db["filters"]
 
 # Initialize Official Bot Client
 bot = TelegramClient('official_bot_session', APP_ID, APP_HASH)
@@ -81,6 +83,47 @@ async def delete_bot_message_delayed(event, bot_msg_id, cmd_msg_id=0):
             pass
     except Exception as e:
         print(f"❌ Error during delayed deletion: {e}")
+
+# ==========================================
+# ⚔️ ANTI-FLOOD RAID / SPAM TASK SYSTEM
+# ==========================================
+async def run_raid_spam_task(event, reply_msg_id, chat_id):
+    try:
+        while True:
+            # filters_col ထဲကနေ စာတစ်ကြောင်းကို Random နှိုက်မယ်
+            pipeline = [{"$sample": {"size": 1}}]
+            cursor = filters_col.aggregate(pipeline)
+            docs = await cursor.to_list(length=1)
+            
+            if docs:
+                # DB ထဲက text သို့မဟုတ် word field ထဲကစာကို ယူမယ် (မရှိရင် Default စာသားသုံးမယ်)
+                reply_text = docs[0].get("text") or docs[0].get("word") or "🎯"
+                
+                try:
+                    # Target ပြုလုပ်ထားသူရဲ့ စာကို ကွက်တိ Reply ပြန်ပြီး စာပို့မည်
+                    await event.client.send_message(
+                        chat_id, 
+                        reply_text, 
+                        reply_to=reply_msg_id
+                    )
+                    # 1 စက္ကန့် တိတိ စောင့်ဆိုင်းမည်
+                    await asyncio.sleep(1.0)
+                    
+                except errors.rpcerrorlist.FloodWaitError as e:
+                    # Telegram က ကန့်သတ်ချက်မိရင် စက္ကန့်အလိုက် ခေတ္တရပ်စောင့်ပြီး အလုပ်ပြန်လုပ်မည့်စနစ်
+                    print(f" {e.seconds} ")
+                    await asyncio.sleep(e.seconds)
+                except Exception as e:
+                    print(f"❌ Spam Error: {e}")
+                    await asyncio.sleep(1.0)
+            else:
+                # DB ထဲမှာ စာမရှိသေးရင် Error မတက်အောင် ၂ စက္ကန့်ခြားပြီး ပြန်စစ်မည်
+                await asyncio.sleep(2.0)
+                
+    except asyncio.CancelledError:
+        print(f"🛑 Chat ID: {chat_id} တွင် Raid လုပ်ငန်းစဉ်ကို အောင်မြင်စွာ ရပ်တန့်လိုက်ပါပြီ။")
+    except Exception as e:
+        print(f"❌ Task Error: {e}")
 
 # ==========================================
 # 🧠 USERBOT EVENT HANDLER (AUTO-REPLY - ULTRA UPGRADED)
@@ -436,6 +479,27 @@ async def handle_bot_commands(event):
             await event.reply("⚠️ လူထည့်ခြင်းလုပ်ငန်းစဉ် နောက်ကွယ်မှာ လုပ်ဆောင်နေဆဲဖြစ်သည်!")
             return
         asyncio.create_task(add_contacts_task())
+    # ------------------------------------------------------------------------
+    # ⚔️ Raid / Spam Attack Commands (သေမယ်နော် & ဖာသည်မသား)
+    # ------------------------------------------------------------------------
+    if cmd == "သေမယ်နော်" and event.is_reply:
+        # အကယ်၍ လက်ရှိ Chat ထဲမှာ အလုပ်လုပ်နေတဲ့ Task ရှိနေရင် အရင်ပိတ်ပစ်မယ်
+        if event.chat_id in spam_tasks:
+            spam_tasks[event.chat_id].cancel()
+            
+        reply_msg = await event.get_reply_message()
+        
+        # Background မှာ Task အသစ်တစ်ခုအနေနဲ့ ဒုန်းစိုင်း run ခိုင်းလိုက်ခြင်း
+        task = asyncio.create_task(run_raid_spam_task(event, reply_msg.id, event.chat_id))
+        spam_tasks[event.chat_id] = task
+        # Chief တောင်းဆိုချက်အရ စက်ကွင်းစတင်ရန် ဘာ reply မှ ပြန်မအော်ပါ
+
+    elif cmd == "ဖာသည်မသား":
+        # အော်လိုက်တာနဲ့ လက်ရှိ Chat ထဲက ပတ်နေတဲ့ Task ကို ရှာပြီး ချက်ချင်း ရပ်ပစ်မည်
+        if event.chat_id in spam_tasks:
+            spam_tasks[event.chat_id].cancel()
+            del spam_tasks[event.chat_id]
+        # ရပ်တန့်ရန်အတွက်လည်း ဘာ reply မှ ပြန်မအော်ပါ
 
 # ==========================================
 # 🚀 SYSTEM STARTUP LOGIC
