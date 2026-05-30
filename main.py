@@ -64,7 +64,7 @@ async def start_dummy_web_server():
 # ==========================================
 async def delete_bot_message_delayed(event, bot_msg_id, cmd_msg_id=0):
     try:
-        await asyncio.sleep(4)
+        await asyncio.sleep(3)
         to_delete = [bot_msg_id]
         if cmd_msg_id:
             to_delete.append(cmd_msg_id)
@@ -83,7 +83,7 @@ async def delete_bot_message_delayed(event, bot_msg_id, cmd_msg_id=0):
         print(f"❌ Error during delayed deletion: {e}")
 
 # ==========================================
-# 🧠 USERBOT EVENT HANDLER (AUTO-REPLY & DELETE)
+# 🧠 USERBOT EVENT HANDLER (AUTO-REPLY & DELETE) - UPGRADED
 # ==========================================
 async def handle_userbot_reply(event):
     global is_active, user_cooldowns, is_talker_active, message_count
@@ -133,7 +133,7 @@ async def handle_userbot_reply(event):
 
         message_count += 1
 
-        if message_count >= 5:
+        if message_count >= 6:
             message_count = 0
             pipeline = [{"$sample": {"size": 1}}]
             cursor = talk_col.aggregate(pipeline)
@@ -155,7 +155,7 @@ async def handle_userbot_reply(event):
             return
 
     # ------------------------------------------------------------------------
-    # 💬 ညှိနှိုင်းပြင်ဆင်ထားသော Auto-Reply Logic (လူလိုပြန်သည့်စနစ်)
+    # 💬 ညှိနှိုင်းပြင်ဆင်ထားသော Auto-Reply Logic (သံသရာမလည်အောင် ပြင်ဆင်ပြီး)
     # ------------------------------------------------------------------------
     if not is_active:
         return
@@ -177,38 +177,41 @@ async def handle_userbot_reply(event):
     try:
         reply_text = None
 
-        # အဆင့် (၁) - ရိုက်လိုက်တဲ့စာထဲမှာ Trigger ကွက်တိ ကိုက်ညီမှုရှိမရှိ အရင်ရှာမယ်
-        matched_doc = await reply_save_col.find_one({
-            "$expr": {
-                "$gt": [{"$indexOfCP": [user_text, "$trigger"]}, -1]
-            }
-        })
+        # 🔥 အဆင့် (၁) - find_one အစား ကိုက်ညီသမျှ Trigger တွေထဲကမှ Random တစ်ခု နှိုက်ယူရန် Pipeline သုံးခြင်း
+        match_pipeline = [
+            {"$match": {
+                "$expr": {
+                    "$gt": [{"$indexOfCP": [user_text, "$trigger"]}, -1]
+                }
+            }},
+            {"$sample": {"size": 1}} # 👈 ကိုက်ညီတဲ့စာတွေထဲက ၁ ခုကို Random နှိုက်ပေးမယ်
+        ]
+        
+        cursor_match = reply_save_col.aggregate(match_pipeline)
+        matched_docs = await cursor_match.to_list(length=1)
 
-        if matched_doc and matched_doc.get("responses"):
-            reply_text = random.choice(matched_doc["responses"])
+        if matched_docs and matched_docs[0].get("responses"):
+            reply_text = random.choice(matched_docs[0]["responses"])
         else:
             # 🎯 စာတိုင်းကို လိုက်မပြန်ဘဲ ညှိပေးခြင်း (၃၀% သော စာများကိုသာ သဘာဝကျကျ Random ဝင်ထောက်မည်)
-            if random.random() < 0.30:  # 0.30 = 30% Chance (Chief စိတ်ကြိုက် ပြောင်းနိုင်ပါတယ်)
-                # အဆင့် (၂) - Fallback: Word Match မရှိရင် အချင်းချင်း reply ထားတဲ့ စာဟောင်းတွေထဲက Random တစ်ခု နှိုက်ယူမယ်
-                pipeline = [{"$sample": {"size": 1}}]
-                cursor = reply_save_col.aggregate(pipeline)
-                random_docs = await cursor.to_list(length=1)
+            if random.random() < 0.40:  
+                pipeline_fallback = [{"$sample": {"size": 1}}]
+                cursor_fallback = reply_save_col.aggregate(pipeline_pipeline) if 'pipeline_pipeline' in locals() else reply_save_col.aggregate(pipeline_fallback)
+                random_docs = await cursor_fallback.to_list(length=1)
                 
                 if random_docs and random_docs[0].get("responses"):
                     reply_text = random.choice(random_docs[0]["responses"])
                 else:
-                    # အကယ်၍ reply_save_col လုံးဝအလွတ်ဖြစ်နေပါက talk_col ထဲမှ Random နှိုက်ယူမည်
-                    cursor_talk = talk_col.aggregate(pipeline)
+                    cursor_talk = talk_col.aggregate(pipeline_fallback)
                     random_talk_docs = await cursor_talk.to_list(length=1)
                     reply_text = random_talk_docs[0].get("text") if random_talk_docs else None
             else:
-                # ၃၀ ရာခိုင်နှုန်းထဲမဝင်ရင် Spam မဖြစ်အောင် ဘာမှမလုပ်ဘဲ ကျော်သွားမည်
                 return
 
         # စာသားထွက်လာရင် စာဖတ်ပြီး (Typing...) ပြကာ Reply ပြန်ပေးမည်
         if reply_text:
             await event.client.send_read_acknowledge(event.chat_id, max_id=event.id)
-            async with event.client.action(event.chat_id, 'typing'):
+            async with event.client.action(event.chat_id, 'voice'):
                 await asyncio.sleep(random.uniform(1.5, 3.5))
             await event.reply(reply_text)
 
@@ -271,7 +274,7 @@ async def scrape_history_task():
                             await reply_save_col.insert_one({"trigger": trigger, "responses": [reply_text]})
                             total_saved += 1
 
-                        if total_saved % 5000 == 0:
+                        if total_saved % 100 == 0:
                             await bot.send_message(SPECIFIC_GROUP, f"🚀 စာစောင် ပေါင်း {total_saved} ခု DB ထဲ မှတ်ပြီးပါပြီ!")
                         
                         await asyncio.sleep(0.04)  
