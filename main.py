@@ -28,6 +28,7 @@ user_cooldowns = {}
 client_mongo = AsyncIOMotorClient(MONGO_URI)
 db = client_mongo["telegram_bot"]
 reply_save_col = db["reply_save_col"]
+target_bots_col = db["target_bots"]  # 👈 Auto-Delete လုပ်မည့် Bot ID များ သိမ်းဆည်းရန်
 config_col = db["config_col"]
 
 # Initialize Official Bot Client
@@ -58,22 +59,24 @@ async def start_dummy_web_server():
 # ==========================================
 # 🗑️ ANTI-FLOOD DELAYED DELETION TASK (စာဖျက်မည့်စနစ်)
 # ==========================================
-async def delete_bot_message_delayed(event, bot_msg_id, cmd_msg_id):
+async def delete_bot_message_delayed(event, bot_msg_id, cmd_msg_id=0):
     """ နောက်ကွယ်ကနေ ၄ စက္ကန့်စောင့်ပြီး Floodမမိအောင် စာလှမ်းဖျက်ပေးမည့် စနစ် """
     try:
-        # ⏱️ ၄ စက္ကန့် တိတိ စောင့်ဆိုင်းခြင်း
         await asyncio.sleep(4)
         
-        # Bot ရဲ့စာရော၊ ကိုယ်ရိုက်လိုက်တဲ့ /ဖျက်မည် Command ပါ ၂ ခုလုံးကို တစ်ခါတည်း ဖျက်ပစ်မည် (ရုပ်သံသန့်ရှင်းရေး)
-        await event.client.delete_messages(event.chat_id, [bot_msg_id, cmd_msg_id])
-        print(f"🗑️ Deleted bot message {bot_msg_id} and command {cmd_msg_id} after 4s delay.")
+        # ဖျက်မည့် စာရင်းလုပ်ခြင်း (Command စာရှိရင် တွဲဖျက်မည်၊ မရှိရင် Bot စာပဲ ဖျက်မည်)
+        to_delete = [bot_msg_id]
+        if cmd_msg_id:
+            to_delete.append(cmd_msg_id)
+            
+        await event.client.delete_messages(event.chat_id, to_delete)
+        print(f"🗑️ Auto-deleted message {bot_msg_id} after 4s delay.")
         
     except errors.rpcerrorlist.FloodWaitError as e:
-        # ⚠️ အကယ်၍ စာတွေအများကြီး ဆက်တိုက်ဖျက်လို့ Telegram က Rate Limit (Flood) ပြခဲ့ရင်
-        print(f"⚠️ FloodWait Caught! Must wait {e.seconds} seconds before deleting.")
-        await asyncio.sleep(e.seconds) # Telegram တောင်းဆိုတဲ့ စက္ကန့်အတိုင်း စမတ်ကျကျ စောင့်ပြီးမှ ပြန်ဖျက်မည်
+        print(f"⚠️ FloodWait Caught! Must wait {e.seconds} seconds.")
+        await asyncio.sleep(e.seconds)
         try:
-            await event.client.delete_messages(event.chat_id, [bot_msg_id, cmd_msg_id])
+            await event.client.delete_messages(event.chat_id, to_delete)
         except Exception:
             pass
     except Exception as e:
@@ -85,17 +88,76 @@ async def delete_bot_message_delayed(event, bot_msg_id, cmd_msg_id):
 async def handle_userbot_reply(event):
     global is_active, user_cooldowns
     
-    # 🔍 စစ်ဆေးချက် (၁) - Owner က Bot ရဲ့စာကို Reply ပြန်ပြီး /ဖျက်မည် လို့ ရိုက်တာလား?
+    # ------------------------------------------------------------------------
+    # 🎯 အပိုင်း (၁) - Bot ID ကို အမြဲတမ်း Auto-Delete စာရင်းထဲ သွင်းခြင်း (Reply ပြီး /ဖျက်မည် ဟု ရိုက်ပါက)
+    # ------------------------------------------------------------------------
     if event.sender_id == OWNER_ID and event.message.text.strip() == "/ဖျက်မည်":
         if event.is_reply:
             reply_msg = await event.get_reply_message()
             reply_sender = await reply_msg.get_sender()
             
-            # စာပြန်ခံရတဲ့အကောင့်က Bot အကောင့်စစ်စစ် ဖြစ်နေရင်...
             if reply_sender and reply_sender.bot:
-                # 🚀 အခြား စာဖတ်/စာပြန် Logic တွေကို မပိတ်ဆို့စေရန် Background Task အဖြစ် လွှဲပေးလိုက်ခြင်း
+                bot_id = reply_sender.id
+                # DB ထဲမှာ ဒီ Bot ID ကို အမြဲတမ်း မှတ်ထားလိုက်ခြင်း
+                await target_bots_col.update_one(
+                    {"bot_id": bot_id},
+                    {"$set": {"bot_id": bot_id, "username": reply_sender.username}},
+                    upsert=True
+                )
+                await event.reply(f"🎯 Bot ID: `{bot_id}` (@{reply_sender.username}) ကို စာရင်းသွင်းပြီးပါပြီ။ နောက်ဆို စာတက်လာတာနဲ့ ၄ စက္ကန့်အတွင်း အလိုအလျောက် ရှင်းလင်းပေးပါတော့မယ် ဆရာကြီး!")
+                
+                # လက်ရှိ Bot စာနဲ့ ကိုယ်ရိုက်တဲ့ Command စာကိုပါ တစ်ခါတည်း ဖျက်ပစ်မည်
                 asyncio.create_task(delete_bot_message_delayed(event, reply_msg.id, event.id))
-                return # ဤနေရာတွင် တင် ရပ်မည် (အောက်က Auto-Reply Logic ထဲ ပေးမဝင်တော့ပါ)
+                return
+
+    # ------------------------------------------------------------------------
+    # 🤖 အပိုင်း (၂) - Chat ထဲ စာတက်လာတိုင်း သတ်မှတ်ထားတဲ့ Bot ဟုတ်မဟုတ် စစ်ပြီး Auto-Delete လုပ်ခြင်း
+    # ------------------------------------------------------------------------
+    sender = await event.get_sender()
+    if sender and sender.bot:
+        # DB ထဲမှာ ဒီ Bot ID ရှိ၊ မရှိ စစ်ဆေးခြင်း
+        is_target = await target_bots_col.find_one({"bot_id": event.sender_id})
+        if is_target:
+            # စာရင်းထဲက ကောင်ဆိုရင် ဘာ Command မှ ရိုက်စရာမလိုဘဲ ၄ စက္ကန့် Task ဆီ တန်းလွှဲပေးလိုက်မည်
+            asyncio.create_task(delete_bot_message_delayed(event, event.id, 0))
+            return
+
+    # ------------------------------------------------------------------------
+    # 💬 အပိုင်း (၃) - မူရင်း Auto-Reply Logic (စာပြန်သည့်စနစ်)
+    # ------------------------------------------------------------------------
+    if not is_active:
+        return
+
+    if event.out or (sender and sender.bot):
+        return
+
+    user_text = event.message.text.strip().lower()
+    if not user_text:
+        return
+
+    user_id = event.sender_id
+    current_time = time.time()
+    if user_id in user_cooldowns and (current_time - user_cooldowns[user_id] < COOLDOWN_TIME):
+        return
+
+    matched_doc = await reply_save_col.find_one({
+        "$expr": {
+            "$gt": [{"$indexOfCP": [user_text, "$trigger"]}, -1]
+        }
+    })
+
+    if matched_doc:
+        user_cooldowns[user_id] = current_time
+        try:
+            await event.client.send_read_acknowledge(event.chat_id, max_id=event.id)
+            async with event.client.action(event.chat_id, 'typing'):
+                await asyncio.sleep(random.uniform(2.5, 5.0))
+
+            reply_text = random.choice(matched_doc["responses"])
+            await event.reply(reply_text)
+        except Exception as e:
+            print(f"❌ Userbot Reply Error: {e}")
+
 
     # ------------------------------------------
     # 🤖 အောက်ကအပိုင်းကတော့ မူရင်း Auto-Reply Logic ဖြစ်ပါတယ်
