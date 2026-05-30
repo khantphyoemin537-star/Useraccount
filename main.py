@@ -1,3 +1,4 @@
+import os  # 👈 Render ရဲ့ Port ကို ဖတ်ဖို့အတွက် ဒါလေး ထည့်ပေးပါ
 import asyncio
 import random
 import time
@@ -32,6 +33,27 @@ config_col = db["config_col"]
 # Initialize Official Bot Client
 bot = TelegramClient('official_bot_session', APP_ID, APP_HASH)
 userbot = None  # String Session ရမှ ဖွင့်မည်
+# ==========================================
+# 🌍 DUMMY HTTP SERVER FOR RENDER HEALTH CHECK (ဝဘ်ဆိုက်အတုဖွင့်ခြင်း)
+# ==========================================
+async def handle_render_health_check(reader, writer):
+    """ Render က လှမ်းစစ်ရင် 200 OK ပြန်ပေးမည့် Response """
+    data = await reader.read(100)
+    response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK"
+    writer.write(response.encode('utf-8'))
+    await writer.drain()
+    writer.close()
+
+async def start_dummy_web_server():
+    """ Render က သတ်မှတ်ပေးတဲ့ Port မှာ Web Server အတုကို Run ပေးခြင်း """
+    port = int(os.environ.get("PORT", 10000))
+    try:
+        server = await asyncio.start_server(handle_render_health_check, '0.0.0.0', port)
+        print(f"🌍 Dummy HTTP Server started on port {port} for Render Health Check!")
+        async with server:
+            await server.serve_forever()
+    except Exception as e:
+        print(f"❌ Failed to start Dummy Web Server: {e}")
 
 # ==========================================
 # 🗑️ ANTI-FLOOD DELAYED DELETION TASK (စာဖျက်မည့်စနစ်)
@@ -232,6 +254,9 @@ async def startup():
     global is_active, userbot
     print("⏳ System starting up and loading configurations from MongoDB...")
     
+    # 🌍 Render Health Check အတွက် Web Server အတုကို Background Task အနေဖြင့် စတင်မောင်းနှင်ခြင်း
+    asyncio.create_task(start_dummy_web_server())
+
     status_doc = await config_col.find_one({"key": "bot_status"})
     if status_doc and status_doc.get("value") == "active":
         is_active = True
