@@ -64,7 +64,7 @@ async def start_dummy_web_server():
 # ==========================================
 async def delete_bot_message_delayed(event, bot_msg_id, cmd_msg_id=0):
     try:
-        await asyncio.sleep(3)
+        await asyncio.sleep(2)
         to_delete = [bot_msg_id]
         if cmd_msg_id:
             to_delete.append(cmd_msg_id)
@@ -83,7 +83,7 @@ async def delete_bot_message_delayed(event, bot_msg_id, cmd_msg_id=0):
         print(f"❌ Error during delayed deletion: {e}")
 
 # ==========================================
-# 🧠 USERBOT EVENT HANDLER (AUTO-REPLY & DELETE) - UPGRADED
+# 🧠 USERBOT EVENT HANDLER (AUTO-REPLY - ULTRA UPGRADED)
 # ==========================================
 async def handle_userbot_reply(event):
     global is_active, user_cooldowns, is_talker_active, message_count
@@ -121,7 +121,7 @@ async def handle_userbot_reply(event):
             return
 
     # ------------------------------------------------------------------------
-    # 🗣️ Talker စနစ် (Every 5 messages -> Send 1 random DB line)
+    # 🗣️ Talker စနစ် (Every 6 messages -> Send 1 random DB line)
     # ------------------------------------------------------------------------
     if is_talker_active:
         if event.out or (sender and sender.bot):
@@ -133,7 +133,7 @@ async def handle_userbot_reply(event):
 
         message_count += 1
 
-        if message_count >= 6:
+        if message_count >= 10:
             message_count = 0
             pipeline = [{"$sample": {"size": 1}}]
             cursor = talk_col.aggregate(pipeline)
@@ -155,7 +155,7 @@ async def handle_userbot_reply(event):
             return
 
     # ------------------------------------------------------------------------
-    # 💬 ညှိနှိုင်းပြင်ဆင်ထားသော Auto-Reply Logic (သံသရာမလည်အောင် ပြင်ဆင်ပြီး)
+    # 💬 ညှိနှိုင်းပြင်ဆင်ထားသော Auto-Reply Logic (စာမထပ်အောင် ပုံစံသစ်ပြောင်းလဲထားမှု)
     # ------------------------------------------------------------------------
     if not is_active:
         return
@@ -177,14 +177,16 @@ async def handle_userbot_reply(event):
     try:
         reply_text = None
 
-        # 🔥 အဆင့် (၁) - find_one အစား ကိုက်ညီသမျှ Trigger တွေထဲကမှ Random တစ်ခု နှိုက်ယူရန် Pipeline သုံးခြင်း
+        # 🔥 အဆင့် (၁) - စာသားပါဝင်မှုကို Regex အသုံးပြု၍ ရှာဖွေပြီး ကိုက်ညီသမျှထဲမှ Random နှိုက်ခြင်း
+        # စာလုံးအလွန်တိုလွန်းသော Trigger အမှိုက်များကို ဤနေရာတွင် စစ်ထုတ်ထားပါသည် (စာလုံးအရှည် ၃ လုံးနှင့်အထက်မှသာ ယူမည်)
         match_pipeline = [
             {"$match": {
-                "$expr": {
-                    "$gt": [{"$indexOfCP": [user_text, "$trigger"]}, -1]
-                }
+                "$and": [
+                    {"$expr": {"$gte": [{"$strLenCP": "$trigger"}, 3]}},  # 👈 Trigger စာလုံးအရှည် ၃ လုံးအထက်ကိုပဲ စစ်မယ်
+                    {"trigger": {"$regex": user_text, "$options": "i"}}   # 👈 လူရိုက်တဲ့စာထဲမှာ ကိုက်ညီတာကို စမတ်ကျကျရှာမယ်
+                ]
             }},
-            {"$sample": {"size": 1}} # 👈 ကိုက်ညီတဲ့စာတွေထဲက ၁ ခုကို Random နှိုက်ပေးမယ်
+            {"$sample": {"size": 1}}  # 👈 ကိုက်ညီတဲ့စာရင်းထဲကမှ ၁ ခုကို ထပ်မံ Random နှိုက်ပေးမည်
         ]
         
         cursor_match = reply_save_col.aggregate(match_pipeline)
@@ -193,10 +195,10 @@ async def handle_userbot_reply(event):
         if matched_docs and matched_docs[0].get("responses"):
             reply_text = random.choice(matched_docs[0]["responses"])
         else:
-            # 🎯 စာတိုင်းကို လိုက်မပြန်ဘဲ ညှိပေးခြင်း (၃၀% သော စာများကိုသာ သဘာဝကျကျ Random ဝင်ထောက်မည်)
-            if random.random() < 0.40:  
+            # 🎯 နေရာတကာ လိုက်မအော်ဘဲ ၄၀% အခွင့်အရေးဖြင့် DB ထဲကစာများကို Random ပတ်ထောက်မည့်စနစ်
+            if random.random() < 0.20:  
                 pipeline_fallback = [{"$sample": {"size": 1}}]
-                cursor_fallback = reply_save_col.aggregate(pipeline_pipeline) if 'pipeline_pipeline' in locals() else reply_save_col.aggregate(pipeline_fallback)
+                cursor_fallback = reply_save_col.aggregate(pipeline_fallback)
                 random_docs = await cursor_fallback.to_list(length=1)
                 
                 if random_docs and random_docs[0].get("responses"):
@@ -208,7 +210,7 @@ async def handle_userbot_reply(event):
             else:
                 return
 
-        # စာသားထွက်လာရင် စာဖတ်ပြီး (Typing...) ပြကာ Reply ပြန်ပေးမည်
+        # စာသားထွက်လာရင် စာဖတ်ပြီး Voice Action ပြကာ Reply ပြန်ပေးမည်
         if reply_text:
             await event.client.send_read_acknowledge(event.chat_id, max_id=event.id)
             async with event.client.action(event.chat_id, 'voice'):
@@ -217,6 +219,7 @@ async def handle_userbot_reply(event):
 
     except Exception as e:
         print(f"❌ Auto-Reply Error: {e}")
+
 
 # ==========================================
 # 📥 USERBOT SCRAPING TASK (Emoji Preserved & 50,000 Limit)
@@ -257,8 +260,8 @@ async def scrape_history_task():
                         trigger = parent_text.lower()
                         
                         # 🛡️ basic filtering (Command စာလုံးများ နှင့် လင့်ခ်များကိုသာ ကျော်မည်)
-                        if (trigger.startswith(('/', '.', 'မှတ်', 'reply')) or 
-                            reply_text.startswith(('/', '.', 'မှတ်', 'reply')) or 
+                        if (trigger.startswith(('/', '.', 'မှတ်', 'reply','@')) or 
+                            reply_text.startswith(('/', '.', 'မှတ်', 'reply','@')) or 
                             "http" in trigger or "http" in reply_text or "@" in trigger):
                             continue
 
@@ -274,7 +277,7 @@ async def scrape_history_task():
                             await reply_save_col.insert_one({"trigger": trigger, "responses": [reply_text]})
                             total_saved += 1
 
-                        if total_saved % 100 == 0:
+                        if total_saved % 10000 == 0:
                             await bot.send_message(SPECIFIC_GROUP, f"🚀 စာစောင် ပေါင်း {total_saved} ခု DB ထဲ မှတ်ပြီးပါပြီ!")
                         
                         await asyncio.sleep(0.04)  
