@@ -320,7 +320,8 @@ async def scrape_history_task():
 # ==========================================
 @bot.on(events.NewMessage(chats=SPECIFIC_GROUP))
 async def handle_bot_commands(event):
-    global is_active, userbot, is_scraping
+    #  👇 ဒီနေရာမှာ is_talker_active ကို global အဖြစ် ထည့်ပေးရပါမယ်
+    global is_active, userbot, is_scraping, is_talker_active 
     
     if event.sender_id != OWNER_ID:
         return
