@@ -1,14 +1,14 @@
-import os  # 👈 Render ရဲ့ Port ကို ဖတ်ဖို့အတွက် ဒါလေး ထည့်ပေးပါ
+import os  # 👈 Render ရဲ့ Port ကို ဖတ်ဖို့အတွက်
 import asyncio
 import random
 import time
 import logging
-from telethon import TelegramClient, events, errors
+from telethon import TelegramClient, events, errors, functions
 from telethon.sessions import StringSession
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # ==========================================
-# ⚙️ CONFIGURATION (မင်းပေးထားတဲ့ Credentials များ)
+# ⚙️ CONFIGURATION (Credentials)
 # ==========================================
 MONGO_URI = "mongodb+srv://khantphyoemin537_db_user:9VRKiaeZkz7rJdpz@cluster0.w6tgi8j.mongodb.net/telegram_bot?appName=Cluster0&tlsAllowInvalidCertificates=true"
 APP_ID = 39584681
@@ -22,8 +22,10 @@ COOLDOWN_TIME = 15
 # Global States
 is_active = False
 is_scraping = False
+is_adding_contacts = False  
 user_cooldowns = {}
-message_count = 0  # 👈 Counter to track chat messages
+is_talker_active = False       
+message_count = 0
 
 # MongoDB Setup
 client_mongo = AsyncIOMotorClient(MONGO_URI)
@@ -31,20 +33,16 @@ db = client_mongo["telegram_bot"]
 reply_save_col = db["reply_save_col"]
 target_bots_col = db["target_bots"]  
 config_col = db["config_col"]
-talk_col = db["random_talk"]   # 👈 ပြင်ဆင်ချက် (၁) - တကယ့် စကားစုစာသားများရှိမည့် Collection အမှန်သို့ ပြောင်းလဲခြင်း
-is_talker_active = False       
-message_count = 0
-
+talk_col = db["random_talk"]   
 
 # Initialize Official Bot Client
 bot = TelegramClient('official_bot_session', APP_ID, APP_HASH)
-userbot = None  # String Session ရမှ ဖွင့်မည်
+userbot = None  
 
 # ==========================================
-# 🌍 DUMMY HTTP SERVER FOR RENDER HEALTH CHECK (ဝဘ်ဆိုက်အတုဖွင့်ခြင်း)
+# 🌍 DUMMY HTTP SERVER FOR RENDER HEALTH CHECK
 # ==========================================
 async def handle_render_health_check(reader, writer):
-    """ Render က လှမ်းစစ်ရင် 200 OK ပြန်ပေးမည့် Response """
     data = await reader.read(100)
     response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK"
     writer.write(response.encode('utf-8'))
@@ -52,7 +50,6 @@ async def handle_render_health_check(reader, writer):
     writer.close()
 
 async def start_dummy_web_server():
-    """ Render က သတ်မှတ်ပေးတဲ့ Port မှာ Web Server အတုကို Run ပေးခြင်း """
     port = int(os.environ.get("PORT", 10000))
     try:
         server = await asyncio.start_server(handle_render_health_check, '0.0.0.0', port)
@@ -63,14 +60,11 @@ async def start_dummy_web_server():
         print(f"❌ Failed to start Dummy Web Server: {e}")
 
 # ==========================================
-# 🗑️ ANTI-FLOOD DELAYED DELETION TASK (စာဖျက်မည့်စနစ်)
+# 🗑️ ANTI-FLOOD DELAYED DELETION TASK
 # ==========================================
 async def delete_bot_message_delayed(event, bot_msg_id, cmd_msg_id=0):
-    """ နောက်ကွယ်ကနေ ၄ စက္ကန့်စောင့်ပြီး Floodမမိအောင် စာလှမ်းဖျက်ပေးမည့် စနစ် """
     try:
         await asyncio.sleep(4)
-        
-        # ဖျက်မည့် စာရင်းလုပ်ခြင်း (Command စာရှိရင် တွဲဖျက်မည်၊ မရှိရင် Bot စာပဲ ဖျက်မည်)
         to_delete = [bot_msg_id]
         if cmd_msg_id:
             to_delete.append(cmd_msg_id)
@@ -92,11 +86,13 @@ async def delete_bot_message_delayed(event, bot_msg_id, cmd_msg_id=0):
 # 🧠 USERBOT EVENT HANDLER (AUTO-REPLY & DELETE)
 # ==========================================
 async def handle_userbot_reply(event):
-    # ပြင်ဆင်ချက် (၂) - message_count ကိုပါ ထိပ်ဆုံးမှာ တစ်ခါတည်း Global ကြေညာပေးလိုက်တာ ပိုစိတ်ချရပါတယ်
     global is_active, user_cooldowns, is_talker_active, message_count
     
+    if not event.message or event.message.text is None:
+        return
+
     # ------------------------------------------------------------------------
-    # 🎯 အပိုင်း (၁) - Bot ID ကို အမြဲတမ်း Auto-Delete စာရင်းထဲ သွင်းခြင်း (Reply ပြီး /ဖျက်မည် ဟု ရိုက်ပါက)
+    # 🎯 Bot ID ကို Auto-Delete စာရင်းထဲ သွင်းခြင်း
     # ------------------------------------------------------------------------
     if event.sender_id == OWNER_ID and event.message.text.strip() == "/ဖျက်မည်":
         if event.is_reply:
@@ -105,32 +101,27 @@ async def handle_userbot_reply(event):
             
             if reply_sender and reply_sender.bot:
                 bot_id = reply_sender.id
-                # DB ထဲမှာ ဒီ Bot ID ကို အမြဲတမ်း  မှတ်ထားလိုက်ခြင်း
                 await target_bots_col.update_one(
                     {"bot_id": bot_id},
                     {"$set": {"bot_id": bot_id, "username": reply_sender.username}},
                     upsert=True
                 )
-                await event.reply(f"🎯 Bot ID: `{bot_id}` (@{reply_sender.username}) ကို စာရင်းသွင်းပြီးပါပြီ။ နောက်ဆို စာတက်လာတာနဲ့ ၄ စက္ကန့်အတွင်း အလိုအလျောက် ရှင်းလင်းပေးပါတော့မယ် ဆရာကြီး!")
-                
-                # လက်ရှိ Bot စာနဲ့ ကိုယ်ရိုက်တဲ့ Command စာကိုပါ တစ်ခါတည်း ဖျက်ပစ်မည်
+                await event.reply(f"🎯 Bot ID: `{bot_id}` (@{reply_sender.username}) ကို မှတ်ပြီးပါပြီ။ ၄ စက္ကန့်အတွင်း အလိုအလျောက် ရှင်းလင်းပေးပါတော့မယ်!")
                 asyncio.create_task(delete_bot_message_delayed(event, reply_msg.id, event.id))
                 return
 
     # ------------------------------------------------------------------------
-    # 🤖 အပိုင်း (၂) - Chat ထဲ စာတက်လာတိုင်း သတ်မှတ်ထားတဲ့ Bot ဟုတ်မဟုတ် စစ်ပြီး Auto-Delete လုပ်ခြင်း
+    # 🤖 Target Bot ဟုတ်မဟုတ် စစ်ပြီး ဖျက်ခြင်း
     # ------------------------------------------------------------------------
     sender = await event.get_sender()
     if sender and sender.bot:
-        # DB ထဲမှာ ဒီ Bot ID ရှိ၊ မရှိ စစ်ဆေးခြင်း
         is_target = await target_bots_col.find_one({"bot_id": event.sender_id})
         if is_target:
-            # စာရင်းထဲက ကောင်ဆိုရင် ဘာ Command မှ ရိုက်စရာမလိုဘဲ ၄ စက္ကန့် Task ဆီ တန်းလွှဲပေးလိုက်မည်
             asyncio.create_task(delete_bot_message_delayed(event, event.id, 0))
             return
 
     # ------------------------------------------------------------------------
-    # 🗣️ Talker စနစ် (Every 5 messages -> Send 1 random DB line without reply)
+    # 🗣️ Talker စနစ် (Every 5 messages -> Send 1 random DB line)
     # ------------------------------------------------------------------------
     if is_talker_active:
         if event.out or (sender and sender.bot):
@@ -140,15 +131,10 @@ async def handle_userbot_reply(event):
         if not user_text:
             return
 
-        # Counter ကို တစ်တိုးမယ်
         message_count += 1
 
-        # စာ ၅ ကြောင်း ပြည့်၊ မပြည့် စစ်မယ်
         if message_count >= 5:
-            # ပြည့်တာနဲ့ Counter ကို ၀ ချက်ချင်းပြန်လုပ်မယ်
             message_count = 0
-
-            # ပြင်ဆင်ချက် (၃) - talk_col (random_talk) ထဲကနေ စာသားလှမ်းနှိုက်ခြင်း
             pipeline = [{"$sample": {"size": 1}}]
             cursor = talk_col.aggregate(pipeline)
             random_docs = await cursor.to_list(length=1)
@@ -159,22 +145,17 @@ async def handle_userbot_reply(event):
                 
                 if reply_text:
                     try:
-                        # Seen ပြပေးမယ်
                         await event.client.send_read_acknowledge(event.chat_id, max_id=event.id)
-                        
-                        # စာလုံးအရှည်အလိုက် သဘာဝကျကျ စာရိုက်သလို Delay ပေးမယ်
                         typing_delay = max(2.0, min(len(reply_text) * 0.1, 5.0))
                         async with event.client.action(event.chat_id, 'typing'):
                             await asyncio.sleep(typing_delay)
-
-                        # Reply မထောက်ဘဲ Group ထဲ စာလှမ်းပစ်မယ်
                         await event.respond(reply_text)
                     except Exception as e:
                         print(f"❌ Talker Error: {e}")
             return
 
     # ------------------------------------------------------------------------
-    # 💬 အပိုင်း (၃) - မူရင်း Auto-Reply Logic (စာပြန်သည့်စနစ်)
+    # 💬 ညှိနှိုင်းပြင်ဆင်ထားသော Auto-Reply Logic (လူလိုပြန်သည့်စနစ်)
     # ------------------------------------------------------------------------
     if not is_active:
         return
@@ -191,99 +172,212 @@ async def handle_userbot_reply(event):
     if user_id in user_cooldowns and (current_time - user_cooldowns[user_id] < COOLDOWN_TIME):
         return
 
-    matched_doc = await reply_save_col.find_one({
-        "$expr": {
-            "$gt": [{"$indexOfCP": [user_text, "$trigger"]}, -1]
-        }
-    })
+    user_cooldowns[user_id] = current_time
 
-    if matched_doc:
-        user_cooldowns[user_id] = current_time
-        try:
+    try:
+        reply_text = None
+
+        # အဆင့် (၁) - ရိုက်လိုက်တဲ့စာထဲမှာ Trigger ကွက်တိ ကိုက်ညီမှုရှိမရှိ အရင်ရှာမယ်
+        matched_doc = await reply_save_col.find_one({
+            "$expr": {
+                "$gt": [{"$indexOfCP": [user_text, "$trigger"]}, -1]
+            }
+        })
+
+        if matched_doc and matched_doc.get("responses"):
+            reply_text = random.choice(matched_doc["responses"])
+        else:
+            # 🎯 စာတိုင်းကို လိုက်မပြန်ဘဲ ညှိပေးခြင်း (၃၀% သော စာများကိုသာ သဘာဝကျကျ Random ဝင်ထောက်မည်)
+            if random.random() < 0.30:  # 0.30 = 30% Chance (Chief စိတ်ကြိုက် ပြောင်းနိုင်ပါတယ်)
+                # အဆင့် (၂) - Fallback: Word Match မရှိရင် အချင်းချင်း reply ထားတဲ့ စာဟောင်းတွေထဲက Random တစ်ခု နှိုက်ယူမယ်
+                pipeline = [{"$sample": {"size": 1}}]
+                cursor = reply_save_col.aggregate(pipeline)
+                random_docs = await cursor.to_list(length=1)
+                
+                if random_docs and random_docs[0].get("responses"):
+                    reply_text = random.choice(random_docs[0]["responses"])
+                else:
+                    # အကယ်၍ reply_save_col လုံးဝအလွတ်ဖြစ်နေပါက talk_col ထဲမှ Random နှိုက်ယူမည်
+                    cursor_talk = talk_col.aggregate(pipeline)
+                    random_talk_docs = await cursor_talk.to_list(length=1)
+                    reply_text = random_talk_docs[0].get("text") if random_talk_docs else None
+            else:
+                # ၃၀ ရာခိုင်နှုန်းထဲမဝင်ရင် Spam မဖြစ်အောင် ဘာမှမလုပ်ဘဲ ကျော်သွားမည်
+                return
+
+        # စာသားထွက်လာရင် စာဖတ်ပြီး (Typing...) ပြကာ Reply ပြန်ပေးမည်
+        if reply_text:
             await event.client.send_read_acknowledge(event.chat_id, max_id=event.id)
             async with event.client.action(event.chat_id, 'typing'):
-                await asyncio.sleep(random.uniform(2.5, 5.0))
-
-            reply_text = random.choice(matched_doc["responses"])
+                await asyncio.sleep(random.uniform(1.5, 3.5))
             await event.reply(reply_text)
-        except Exception as e:
-            print(f"❌ Userbot Reply Error: {e}")
+
+    except Exception as e:
+        print(f"❌ Auto-Reply Error: {e}")
 
 # ==========================================
-# 📥 USERBOT SCRAIPING TASK (/replyမှတ်)
+# 📥 USERBOT SCRAPING TASK (Emoji Preserved & 50,000 Limit)
 # ==========================================
 async def scrape_history_task():
     global is_scraping, userbot
     if not userbot:
-        await bot.send_message(SPECIFIC_GROUP, "❌ Userbot အသက်မဝင်သေးသဖြင့် စာမှတ်၍မရပါ။ /string အရင်လုပ်ပေးပါ။")
+        await bot.send_message(SPECIFIC_GROUP, "❌ Userbot အသက်မဝင်သေးပါ။ /string အရင်လုပ်ပေးပါ။")
         return
 
     is_scraping = True
-    await bot.send_message(SPECIFIC_GROUP, "📥 စာဟောင်း ၂ သိန်းမှတ်ခြင်း လုပ်ငန်းစဉ် စတင်ပါပြီ... ခေတ္တစောင့်ဆိုင်းပေးပါ။")
+    await bot.send_message(SPECIFIC_GROUP, "📥 စာဟောင်းများမှ Reply များကို စတင်မှတ်သားနေပါပြီ (အီမိုဂျီများ အပြည့်အစုံပါဝင်ပါမည်)...")
     
     try:
         msg_cache = {}
         total_saved = 0
-        TARGET_LIMIT = 200000
+        TARGET_LIMIT = 50000    # 👈 Chief တောင်းဆိုချက်အရ 50,000 သို့ ပြောင်းလဲထားပါသည်
+        FETCH_LIMIT = 100000     # Target ပြည့်ရန် သင့်တော်သော လှမ်းဖတ်မှုပမာဏ
 
-        async for msg in userbot.iter_messages(SPECIFIC_GROUP, limit=400000):
-            if msg and msg.text:
-                msg_cache[msg.id] = msg.text.strip()
+        try:
+            async for msg in userbot.iter_messages(SPECIFIC_GROUP, limit=FETCH_LIMIT):
+                if msg and msg.text:
+                    msg_cache[msg.id] = msg.text.strip()
+        except Exception as cache_err:
+            print(f"⚠️ Cache warning: {cache_err}")
 
-        async for msg in userbot.iter_messages(SPECIFIC_GROUP, limit=400000):
+        async for msg in userbot.iter_messages(SPECIFIC_GROUP, limit=FETCH_LIMIT):
             if not is_scraping or total_saved >= TARGET_LIMIT:
                 break
+            
+            try:
+                if msg and msg.reply_to_msg_id and msg.text:
+                    parent_id = msg.reply_to_msg_id
+                    parent_text = msg_cache.get(parent_id)
+                    reply_text = msg.text.strip()
 
-            if msg.reply_to and msg.text:
-                parent_id = msg.reply_to.reply_to_msg_id
-                parent_text = msg_cache.get(parent_id)
-                reply_text = msg.text.strip()
+                    if parent_text and reply_text:
+                        trigger = parent_text.lower()
+                        
+                        # 🛡️ basic filtering (Command စာလုံးများ နှင့် လင့်ခ်များကိုသာ ကျော်မည်)
+                        if (trigger.startswith(('/', '.', 'မှတ်', 'reply')) or 
+                            reply_text.startswith(('/', '.', 'မှတ်', 'reply')) or 
+                            "http" in trigger or "http" in reply_text or "@" in trigger):
+                            continue
 
-                if parent_text and reply_text:
-                    trigger = parent_text.lower()
-
-                    if len(trigger) <= 3:
-                        continue
-
-                    if (trigger.startswith(('/', '.', 'မှတ်', 'reply')) or 
-                        reply_text.startswith(('/', '.', 'မှတ်', 'reply')) or 
-                        "http" in trigger or "http" in reply_text or "@" in trigger):
-                        continue
-
-                    existing_doc = await reply_save_col.find_one({"trigger": trigger})
-                    if existing_doc:
-                        if reply_text not in existing_doc.get("responses", []):
-                            await reply_save_col.update_one(
-                                {"trigger": trigger},
-                                {"$push": {"responses": reply_text}}
-                            )
+                        existing_doc = await reply_save_col.find_one({"trigger": trigger})
+                        if existing_doc:
+                            if reply_text not in existing_doc.get("responses", []):
+                                await reply_save_col.update_one(
+                                    {"trigger": trigger},
+                                    {"$push": {"responses": reply_text}}
+                                )
+                                total_saved += 1
+                        else:
+                            await reply_save_col.insert_one({"trigger": trigger, "responses": [reply_text]})
                             total_saved += 1
-                    else:
-                        await reply_save_col.insert_one({"trigger": trigger, "responses": [reply_text]})
-                        total_saved += 1
 
-                    if total_saved % 5000 == 0:
-                        await bot.send_message(SPECIFIC_GROUP, f"🚀 စာစောင် ပေါင်း {total_saved} ခု DB ထဲ မှတ်ပြီးပါပြီ Chief!")
-                    
-                    await asyncio.sleep(0.05)
+                        if total_saved % 5000 == 0:
+                            await bot.send_message(SPECIFIC_GROUP, f"🚀 စာစောင် ပေါင်း {total_saved} ခု DB ထဲ မှတ်ပြီးပါပြီ!")
+                        
+                        await asyncio.sleep(0.04)  
+            except Exception as single_msg_err:
+                print(f"⚠️ Skipped a message due to: {single_msg_err}")
+                continue
 
-        await bot.send_message(SPECIFIC_GROUP, f"🎉 အောင်မြင်စွာ စာစောင် {total_saved} ခုကို Pattern အဖြစ် သိမ်းဆည်းပြီးပါပြီ ဆရာကြီး!")
+        await bot.send_message(SPECIFIC_GROUP, f"🎉 အောင်မြင်စွာ Reply စုစုပေါင်း {total_saved} ခုကို DB ထဲ သိမ်းဆည်းပြီးပါပြီ!")
     except Exception as e:
         await bot.send_message(SPECIFIC_GROUP, f"❌ Scraping ပြဿနာတက်ခဲ့သည်: {e}")
     finally:
         is_scraping = False
 
 # ==========================================
+# 👥 USERBOT CONTACT ADDING TASK (Anti-Frozen)
+# ==========================================
+async def add_contacts_task():
+    global is_adding_contacts, userbot
+    if not userbot:
+        try: await bot.send_message(SPECIFIC_GROUP, "❌ Userbot အသက်မဝင်သေးသဖြင့် လူထည့်၍မရပါ။ /string အရင်လုပ်ပါ။")
+        except Exception: pass
+        return
+
+    is_adding_contacts = True
+    try: await bot.send_message(SPECIFIC_GROUP, "👥 Contact များကို Group ထဲသို့ စတင်ဖိတ်ခေါ်နေပါပြီ (Anti-Frozen စနစ်ဖြင့်)...")
+    except Exception: pass
+
+    try:
+        contact_data = await userbot(functions.contacts.GetContactsRequest(hash=0))
+        contacts = contact_data.users
+        total_contacts = len(contacts)
+
+        if total_contacts == 0:
+            try: await bot.send_message(SPECIFIC_GROUP, "ℹ️ ဆွဲထည့်ရန် Contact တစ်ယောက်မှ မရှိပါ။")
+            except Exception: pass
+            return
+
+        try: await bot.send_message(SPECIFIC_GROUP, f"🔍 စုစုပေါင်း Contact {total_contacts} ယောက် တွေ့ရှိသည်။ အန္တရာယ်ကင်းမည့် Delay များဖြင့် စထည့်ပါမည်...")
+        except Exception: pass
+
+        added_count = 0
+        skipped_privacy = 0
+        skipped_already_in = 0
+        failed_count = 0
+
+        for contact in contacts:
+            if not is_adding_contacts:
+                break
+            
+            try:
+                await userbot(functions.channels.InviteToChannelRequest(channel=SPECIFIC_GROUP, users=[contact.id]))
+                added_count += 1
+                await asyncio.sleep(random.uniform(7.0, 15.0))  
+
+            except errors.rpcerrorlist.UserPrivacyRestrictedError:
+                skipped_privacy += 1
+            except errors.rpcerrorlist.UserAlreadyParticipantError:
+                skipped_already_in += 1
+            except errors.rpcerrorlist.FloodWaitError as e:
+                try: await bot.send_message(SPECIFIC_GROUP, f"⚠️ FloodWait မိသဖြင့် {e.seconds} စက္ကန့် ခေတ္တစောင့်ဆိုင်းပါမည်...")
+                except Exception: pass
+                await asyncio.sleep(e.seconds)
+                try:
+                    await userbot(functions.channels.InviteToChannelRequest(channel=SPECIFIC_GROUP, users=[contact.id]))
+                    added_count += 1
+                except Exception:
+                    failed_count += 1
+            except errors.rpcerrorlist.PeerFloodError:
+                try: await bot.send_message(SPECIFIC_GROUP, f"❌ PeerFloodError: အကောင့် Frozen ဖြစ်ခြင်းမှ လုံးဝကာကွယ်ရန် လူသွင်းခြင်းကို ချက်ချင်း ရပ်တန့်လိုက်ပါပြီ Chief!\n\n📊 ရလဒ် - ထည့်ပြီး: {added_count} | Privacy ကျော်: {skipped_privacy}")
+                except Exception: pass
+                break
+            except Exception:
+                failed_count += 1
+                await asyncio.sleep(2.0)
+
+            if (added_count + skipped_privacy + skipped_already_in + failed_count) % 10 == 0:
+                print(f"🔄 Add Progress Check: {(added_count + skipped_privacy + skipped_already_in + failed_count)}/{total_contacts}")
+
+        try:
+            await bot.send_message(
+                SPECIFIC_GROUP,
+                f"📊 **လူထည့်ခြင်းလုပ်ငန်းစဉ် ပြီးဆုံးပါပြီ**\n\n"
+                f"✅ အောင်မြင်စွာထည့်ပြီး: {added_count}\n"
+                f"🔒 Privacy ကျော်: {skipped_privacy}\n"
+                f"👥 ရှိပြီးသားမို့ကျော်: {skipped_already_in}\n"
+                f"❌ မအောင်မြင်/အခြား: {failed_count}"
+            )
+        except Exception: pass
+
+    except Exception as e:
+        try: await bot.send_message(SPECIFIC_GROUP, f"❌ Contact Add ပြဿနာတက်ခဲ့သည်: {e}")
+        except Exception: pass
+    finally:
+        is_adding_contacts = False
+
+# ==========================================
 # 🤖 OFFICIAL BOT COMMAND HANDLERS
 # ==========================================
 @bot.on(events.NewMessage(chats=SPECIFIC_GROUP))
 async def handle_bot_commands(event):
-    global is_active, userbot, is_scraping, is_talker_active 
+    global is_active, userbot, is_scraping, is_talker_active, is_adding_contacts
     
     if event.sender_id != OWNER_ID:
         return
 
-    cmd = event.message.text.strip()
+    cmd = event.message.text.strip() if event.message.text else ""
 
     if cmd == "/string" and event.is_reply:
         reply_msg = await event.get_reply_message()
@@ -294,17 +388,18 @@ async def handle_bot_commands(event):
                 {"$set": {"value": session_str}},
                 upsert=True
             )
-            await event.reply("✅ String Session ကို DB မှာ သိမ်းဆည်းပြီးပါပြီ။ Userbot ကို စတင် ချိတ်ဆက်နေပါတယ်...")
+            await event.reply("✅ String Session ကို DB မှာ သိမ်းပြီးပါပြီ။ Userbot ချိတ်ဆက်နေသည်...")
             
             try:
                 if userbot:
                     await userbot.disconnect()
                 userbot = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
                 await userbot.start()
+                await userbot.get_dialogs()
                 userbot.add_event_handler(handle_userbot_reply, events.NewMessage(chats=SPECIFIC_GROUP))
                 await event.reply("🚀 Userbot is Live!")
             except Exception as e:
-                await event.reply(f"❌ Userbotအိပ်နေတယ်: {e}")
+                await event.reply(f"❌ Userbot အလုပ်မလုပ်ပါ: {e}")
 
     elif cmd == "/ဟိုက်":
         is_active = True
@@ -330,6 +425,12 @@ async def handle_bot_commands(event):
             return
         asyncio.create_task(scrape_history_task())
 
+    elif cmd == "/addcontact":
+        if is_adding_contacts:
+            await event.reply("⚠️ လူထည့်ခြင်းလုပ်ငန်းစဉ် နောက်ကွယ်မှာ လုပ်ဆောင်နေဆဲဖြစ်သည်!")
+            return
+        asyncio.create_task(add_contacts_task())
+
 # ==========================================
 # 🚀 SYSTEM STARTUP LOGIC
 # ==========================================
@@ -337,7 +438,6 @@ async def startup():
     global is_active, userbot
     print("⏳ System starting up and loading configurations from MongoDB...")
     
-    # 🌍 Render Health Check အတွက် Web Server အတုကို Background Task အနေဖြင့် စတင်မောင်းနှင်ခြင်း
     asyncio.create_task(start_dummy_web_server())
 
     status_doc = await config_col.find_one({"key": "bot_status"})
@@ -351,12 +451,13 @@ async def startup():
             session_str = session_doc.get("value")
             userbot = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
             await userbot.start()
+            await userbot.get_dialogs()
             userbot.add_event_handler(handle_userbot_reply, events.NewMessage(chats=SPECIFIC_GROUP))
             print("🚀 Userbot Session Successfully Loaded from DB!")
         except Exception as e:
             print(f"⚠️ Failed to load existing Userbot Session: {e}")
     else:
-        print("💡 No String Session found in DB yet. Waiting for /string command in group.")
+        print("💡 No String Session found in DB yet.")
 
     await bot.start(bot_token=BOT_TOKEN)
     print("🤖 Official Bot is running...")
@@ -364,3 +465,4 @@ async def startup():
 
 if __name__ == '__main__':
     asyncio.run(startup())
+
