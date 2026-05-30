@@ -23,6 +23,7 @@ COOLDOWN_TIME = 15
 is_active = False
 is_scraping = False
 user_cooldowns = {}
+message_count = 0  # 👈 Counter to track chat messages
 
 # MongoDB Setup
 client_mongo = AsyncIOMotorClient(MONGO_URI)
@@ -30,6 +31,9 @@ db = client_mongo["telegram_bot"]
 reply_save_col = db["reply_save_col"]
 target_bots_col = db["target_bots"]  # 👈 Auto-Delete လုပ်မည့် Bot ID များ သိမ်းဆည်းရန်
 config_col = db["config_col"]
+talker_col = db["talker"]      # 👈 Talker စကားစုများရှိမည့် Collection
+is_talker_active = False       # 👈 /ပြောမယ် နှင့် /မပြောဘူး အတွက် Flag
+
 
 # Initialize Official Bot Client
 bot = TelegramClient('official_bot_session', APP_ID, APP_HASH)
@@ -120,6 +124,57 @@ async def handle_userbot_reply(event):
         if is_target:
             # စာရင်းထဲက ကောင်ဆိုရင် ဘာ Command မှ ရိုက်စရာမလိုဘဲ ၄ စက္ကန့် Task ဆီ တန်းလွှဲပေးလိုက်မည်
             asyncio.create_task(delete_bot_message_delayed(event, event.id, 0))
+            return
+
+        # ------------------------------------------------------------------------
+    # 🗣️ Talker စနစ် (Every 5 messages -> Send 1 random DB line without reply)
+    # ------------------------------------------------------------------------
+    if is_talker_active:
+        global message_count
+        
+        sender = await event.get_sender()
+        if event.out or (sender and sender.bot):
+            return
+
+        user_text = event.message.text.strip()
+        if not user_text:
+            return
+
+        # Increment message counter for every incoming chat message
+        message_count += 1
+
+        # Check if 5 messages are reached
+        if message_count < 5:
+            return
+
+        # Reset counter immediately once triggered
+        message_count = 0
+
+        # Fetch 1 random document from talker collection
+        pipeline = [{"$sample": {"size": 1}}]
+        cursor = talker_col.aggregate(pipeline)
+        random_docs = await cursor.to_list(length=1)
+
+        if random_docs:
+            doc = random_docs[0]
+            reply_text = doc.get("text") or (random.choice(doc.get("responses")) if doc.get("responses") else None)
+            
+            if not reply_text:
+                return
+            
+            try:
+                # Mark as read
+                await event.client.send_read_acknowledge(event.chat_id, max_id=event.id)
+                
+                # Human-like typing delay based on string length
+                typing_delay = max(2.0, min(len(reply_text) * 0.1, 5.0))
+                async with event.client.action(event.chat_id, 'typing'):
+                    await asyncio.sleep(typing_delay)
+
+                # Send a plain message to the group (.respond instead of .reply)
+                await event.respond(reply_text)
+            except Exception as e:
+                print(f"❌ Talker Error: {e}")
             return
 
     # ------------------------------------------------------------------------
@@ -302,6 +357,14 @@ async def handle_bot_commands(event):
         is_active = False
         await config_col.update_one({"key": "bot_status"}, {"$set": {"value": "inactive"}}, upsert=True)
         await event.reply("စာလိုက်ထောက်တော့ဘူးမောတယ်")
+
+    elif cmd == "/ပြောမယ်":
+        is_talker_active = True
+        await event.reply("💬 Talker mode activated.")
+     
+    elif cmd == "/မပြောဘူး":
+        is_talker_active = False
+        await event.reply("🔇 Talker mode deactivated.")
 
     elif cmd == "/replyမှတ်":
         if is_scraping:
