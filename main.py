@@ -34,6 +34,9 @@ user_cooldowns = {}
 is_talker_active = False       
 message_count = 0
 spam_tasks = {}
+spawn_tracker = {}            # Waifu Chat ထဲက ID တွေကို မူရင်း Group ID နဲ့ ချိတ်ဆက်ပေးမယ့် မြန်နှုန်းမြင့် Map
+last_spawn_chat_id = None     # Hint Bot က Reply မပြန်ခဲ့ရင် သုံးမယ့် Fallback Group ID
+HINT_REGEX = re.compile(r"(/catch\s+[^\n]+)") #
 
 # MongoDB Setup
 client_mongo = AsyncIOMotorClient(MONGO_URI)
@@ -124,36 +127,61 @@ async def run_raid_spam_task(event, reply_msg_id, chat_id):
         print(f"🛑 Chat ID: {chat_id} တွင် Raid လုပ်ငန်းစဉ် ရပ်တန့်ပြီး။")
 
 # ==========================================
-# ⚔️ NEW ANIME SPAWN DETECTOR & CATCHER HANDLERS
+# ⚔️ NEW ANIME SPAWN DETECTOR & CATCHER HANDLERS (ULTRA SPEED OPTIMIZED)
 # ==========================================
 async def spawn_detector_handler(event):
+    global last_spawn_chat_id, spawn_tracker
     """ Spawn Bot က ပုံ/ဗီဒီယိုနှင့် စာပို့လာပါက ချက်ချင်းဖမ်းဆီး၍ Forward ပို့ပြီး မူရင်းကို ဖျက်မည့်စနစ် """
-    if event.sender_id == SPAWN_BOT_ID and event.message.text:
-        if "ᴀ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ ɪɴ ᴛʜᴇ ᴄʜᴀᴛ!" in event.message.text:
+    # event.text ကို တိုက်ရိုက်စစ်ဆေးခြင်းက ကုဒ်ပိုမိုမြန်ဆန်စေပါတယ်
+    if event.sender_id == SPAWN_BOT_ID and event.text:
+        if "ᴀ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ ɪɴ ᴛʜᴇ ᴄʜᴀᴛ!" in event.text:
+            orig_chat_id = event.chat_id
+            last_spawn_chat_id = orig_chat_id  # တခြား Group တွေအတွက်ပါ သိမ်းထားပေးခြင်း
+            
             try:
-                # Target Chat ID ဆီသို့ ပုံ/စာ အား Forward လှမ်းပို့ခြင်း
-                fwd_msg = await event.message.forward_to(WAIFU_CHAT_ID)
-                # မူရင်း Group ထဲက ကတ်ကို ဘယ်သူမှမမြင်ခင် ချက်ချင်း ဖျက်ချခြင်း
-                await event.delete()
-                # ပို့လိုက်သော Forward message ကို Reply ပြန်ပြီး /waifu ဟု အော်ခြင်း
-                await fwd_msg.reply("/waifu")
-                print("🎯 Character Spawn Detected! Forwarded and /waifu sent successfully.")
-            except Exception as e:
-                print(f"❌ Spawn Detector Error: {e}")
+                # ⚡ Ultra Speed: Forward ခြင်းနှင့် Delete ခြင်းကို ချက်ချင်း ပြိုင်တူ (Concurrently) လုပ်ဆောင်ပါတယ်
+                fwd_task = event.message.forward_to(WAIFU_CHAT_ID)
+                del_task = event.delete()
+                
+                fwd_msg, _ = await asyncio.gather(fwd_task, del_task)
+                
+                # Forward ပြီးတာနဲ့ /waifu လို့ ချက်ချင်း Reply ပြန်အော်မယ်
+                reply_msg = await fwd_msg.reply("/waifu")
+                
+                # Hint Solver က ဘယ် Group ကို ပြန်ပို့ရမလဲ တိကျစွာသိနိုင်ဖို့ ID များကို မှတ်သားခြင်း
+                spawn_tracker[fwd_msg.id] = orig_chat_id
+                spawn_tracker[reply_msg.id] = orig_chat_id
+                
+                # RAM Memory ပြည့်မသွားစေရန် Tracker ထဲက အဟောင်းတွေကို ပုံမှန်ဖျက်ထုတ်ခြင်း
+                if len(spawn_tracker) > 100:
+                    spawn_tracker.pop(next(iter(spawn_tracker)))
+                    
+            except Exception:
+                pass
 
 async def hint_solver_handler(event):
+    global last_spawn_chat_id, spawn_tracker
     """ Hint ပေးသော Bot ထံမှ /catch command ကို copy ယူပြီး မူရင်း Group ဆီသို့ အမြန်လှမ်းပို့မည့်စနစ် """
-    if event.chat_id == WAIFU_CHAT_ID and event.sender_id == HINT_BOT_ID and event.message.text:
-        # Hint ဘေးက /catch စာသားတစ်ခုလုံးကို Regex ဖြင့် ဆွဲထုတ်ခြင်း
-        match = re.search(r"🔹 Hint\s*:\s*(/catch\s+[^\n]+)", event.message.text)
+    if event.chat_id == WAIFU_CHAT_ID and event.sender_id == HINT_BOT_ID and event.text:
+        # Pre-compiled Regex ဖြင့် စာသားကို အမြန်ဆုံး ဖြတ်ထုတ်ဖတ်ယူပါတယ်
+        match = HINT_REGEX.search(event.text)
         if match:
             catch_command = match.group(1).strip()
-            try:
-                # မူရင်း SPECIFIC_GROUP ထဲသို့ Catch Command အမြန်လှမ်းပို့ခြင်း
-                await event.client.send_message(SPECIFIC_GROUP, catch_command)
-                print(f"🚀 Auto-Catted Command Sent: {catch_command}")
-            except Exception as e:
-                print(f"❌ Hint Solver Send Error: {e}")
+            
+            # Default အနေနဲ့ နောက်ဆုံး Spawn ခဲ့တဲ့ Group ID ကို သတ်မှတ်မယ်
+            target_group = last_spawn_chat_id
+            
+            # Hint Bot က Reply ပြန်ထားတဲ့ စာသား ID ရှိရင် အဆိုပါ ID ရဲ့ မူရင်း Group ကို ရှာဖွေမယ်
+            if event.reply_to_msg_id and event.reply_to_msg_id in spawn_tracker:
+                target_group = spawn_tracker[event.reply_to_msg_id]
+                
+            if target_group:
+                try:
+                    # ⚡ စက္ကန့်ပိုင်းအတွင်း မူရင်း Group ထံသို့ /catch command အမြန်လှမ်းပို့ခြင်း
+                    await event.client.send_message(target_group, catch_command)
+                except Exception:
+                    pass
+
 
 # ==========================================
 # 🎙️ VOICE ARCHIVER SYSTEM (NEW & HISTORICAL)
