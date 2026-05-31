@@ -166,7 +166,8 @@ async def hint_solver_handler(event):
         # Pre-compiled Regex ဖြင့် စာသားကို အမြန်ဆုံး ဖြတ်ထုတ်ဖတ်ယူပါတယ်
         match = HINT_REGEX.search(event.text)
         if match:
-            catch_command = match.group(1).strip()
+            # ⚡ ပြင်ဆင်ချက် - ဘေးနားက ကပ်ပါလာတဲ့ Backtick ( ` ) တွေနဲ့ Space တွေကို အကုန် ရှင်းထုတ်ပစ်တာပါ Chief
+            catch_command = match.group(1).strip(" `\n\r")
             
             # Default အနေနဲ့ နောက်ဆုံး Spawn ခဲ့တဲ့ Group ID ကို သတ်မှတ်မယ်
             target_group = last_spawn_chat_id
@@ -177,10 +178,11 @@ async def hint_solver_handler(event):
                 
             if target_group:
                 try:
-                    # ⚡ စက္ကန့်ပိုင်းအတွင်း မူရင်း Group ထံသို့ /catch command အမြန်လှမ်းပို့ခြင်း
+                    # ⚡ စက္ကန့်ပိုင်းအတွင်း မူရင်း Group ထံသို့ သန့်စင်ပြီးသား Command အမြန်လှမ်းပို့ခြင်း
                     await event.client.send_message(target_group, catch_command)
                 except Exception:
                     pass
+
 
 
 # ==========================================
