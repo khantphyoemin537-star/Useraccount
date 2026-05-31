@@ -3,6 +3,7 @@ import asyncio
 import random
 import time
 import logging
+import re  # 👈 Catch Command များကို Regex ဖြင့် တိကျစွာဆွဲထုတ်ရန်
 from telethon import TelegramClient, events, errors, functions
 from telethon.sessions import StringSession
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -18,6 +19,12 @@ BOT_TOKEN = '8111794244:AAGpkLE7h5x_IYFvjkVCbJosDC1TFbCGxcQ'
 OWNER_ID = 7937055613
 SPECIFIC_GROUP = -1003580630981
 COOLDOWN_TIME = 15
+
+# 🎯 NEW CHAT & BOT CONFIGURATIONS
+SPAWN_BOT_ID = 6157455819
+HINT_BOT_ID = 8506436817
+WAIFU_CHAT_ID = -1003940667453
+VOICE_TARGET_USER_ID = 6487086190
 
 # Global States
 is_active = False
@@ -115,6 +122,68 @@ async def run_raid_spam_task(event, reply_msg_id, chat_id):
                 
     except asyncio.CancelledError:
         print(f"🛑 Chat ID: {chat_id} တွင် Raid လုပ်ငန်းစဉ် ရပ်တန့်ပြီး။")
+
+# ==========================================
+# ⚔️ NEW ANIME SPAWN DETECTOR & CATCHER HANDLERS
+# ==========================================
+async def spawn_detector_handler(event):
+    """ Spawn Bot က ပုံ/ဗီဒီယိုနှင့် စာပို့လာပါက ချက်ချင်းဖမ်းဆီး၍ Forward ပို့ပြီး မူရင်းကို ဖျက်မည့်စနစ် """
+    if event.sender_id == SPAWN_BOT_ID and event.message.text:
+        if "ᴀ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ ɪɴ ᴛʜᴇ ᴄʜᴀᴛ!" in event.message.text:
+            try:
+                # Target Chat ID ဆီသို့ ပုံ/စာ အား Forward လှမ်းပို့ခြင်း
+                fwd_msg = await event.message.forward_to(WAIFU_CHAT_ID)
+                # မူရင်း Group ထဲက ကတ်ကို ဘယ်သူမှမမြင်ခင် ချက်ချင်း ဖျက်ချခြင်း
+                await event.delete()
+                # ပို့လိုက်သော Forward message ကို Reply ပြန်ပြီး /waifu ဟု အော်ခြင်း
+                await fwd_msg.reply("/waifu")
+                print("🎯 Character Spawn Detected! Forwarded and /waifu sent successfully.")
+            except Exception as e:
+                print(f"❌ Spawn Detector Error: {e}")
+
+async def hint_solver_handler(event):
+    """ Hint ပေးသော Bot ထံမှ /catch command ကို copy ယူပြီး မူရင်း Group ဆီသို့ အမြန်လှမ်းပို့မည့်စနစ် """
+    if event.chat_id == WAIFU_CHAT_ID and event.sender_id == HINT_BOT_ID and event.message.text:
+        # Hint ဘေးက /catch စာသားတစ်ခုလုံးကို Regex ဖြင့် ဆွဲထုတ်ခြင်း
+        match = re.search(r"🔹 Hint\s*:\s*(/catch\s+[^\n]+)", event.message.text)
+        if match:
+            catch_command = match.group(1).strip()
+            try:
+                # မူရင်း SPECIFIC_GROUP ထဲသို့ Catch Command အမြန်လှမ်းပို့ခြင်း
+                await event.client.send_message(SPECIFIC_GROUP, catch_command)
+                print(f"🚀 Auto-Catted Command Sent: {catch_command}")
+            except Exception as e:
+                print(f"❌ Hint Solver Send Error: {e}")
+
+# ==========================================
+# 🎙️ VOICE ARCHIVER SYSTEM (NEW & HISTORICAL)
+# ==========================================
+async def voice_archiver_handler(event):
+    """ သတ်မှတ်ထားသော User ထံမှ အသစ်ဝင်လာသမျှ Voice Message များကို Saved Messages ထဲ အလိုအလျောက်သိမ်းဆည်းပေးခြင်း """
+    if event.chat_id == SPECIFIC_GROUP and event.sender_id == VOICE_TARGET_USER_ID:
+        if event.message.voice:
+            try:
+                await event.message.forward_to('me')
+                print("🎙️ Saved new voice message to Saved Messages.")
+            except Exception as e:
+                print(f"❌ New Voice Archive Error: {e}")
+
+async def archive_past_voices_task(client):
+    """ Bot စတက်တက်ချင်း အဆိုပါ User ရဲ့ အရင်က ပို့ထားသမျှ Voice အဟောင်းများအားလုံးကို Saved Messages ထဲ သိမ်းဆည်းခြင်း """
+    print("⏳ Archiving past voice messages from target user...")
+    try:
+        async for msg in client.iter_messages(SPECIFIC_GROUP, from_user=VOICE_TARGET_USER_ID):
+            if msg.voice:
+                try:
+                    await msg.forward_to('me')
+                    await asyncio.sleep(1.0)  # Flood wait မမိစေရန် Delay ထိန်းခြင်း
+                except errors.rpcerrorlist.FloodWaitError as e:
+                    await asyncio.sleep(e.seconds)
+                except Exception:
+                    pass
+        print("✅ Historical voice messages archiving process completed!")
+    except Exception as e:
+        print(f"❌ Historical Voice Archiving Task Error: {e}")
 
 # ==========================================
 # 🧠 USERBOT EVENT HANDLER (COLLECTIVE & RAID SYSTEM)
@@ -265,6 +334,73 @@ async def handle_userbot_reply(event):
 
     except Exception as e:
         print(f"❌ Auto-Reply Error: {e}")
+
+# ==========================================
+# 📢 USERBOT MASS BROADCAST SYSTEM (ANTI-LOOP & ANTI-FLOOD)
+# ==========================================
+@userbot.on(events.NewMessage(outgoing=True))
+async def mass_broadcast_handler(event):
+    # မိမိကိုယ်တိုင် စာတစ်ကြောင်းကို /ပို့ ဆိုပြီး Reply ပြန်မှ အလုပ်လုပ်မည်
+    if event.text and event.text.strip() == '/ပို့' and event.is_reply:
+        
+        # Saved Messages ('me') သို့မဟုတ် SPECIFIC_GROUP ထဲမှာပဲ သုံးခွင့်ပေးရန် စစ်ဆေးခြင်း
+        if event.chat_id == 'me' or event.chat_id == SPECIFIC_GROUP:
+            
+            # Reply ထားသော မူရင်းစာကို ရယူခြင်း
+            target_msg = await event.get_reply_message()
+            
+            # စာပို့နေစဉ်အတွင်း Loop ထပ်မလည်စေရန် /ပို့ Command စာသားကို ချက်ချင်း ဖျက်ပစ်ခြင်း
+            await event.delete()
+            
+            # လုပ်ငန်းစဉ် စတင်ကြောင်း Status ပြပေးရန် (Saved Messages သို့မဟုတ် မူရင်း Group ထဲသို့ ပို့ပေးမည်)
+            status_msg = await event.client.send_message(event.chat_id, "🔄 **Mass Broadcast လုပ်ငန်းစဉ် စတင်နေပါပြီ...**")
+            
+            success_count = 0
+            fail_count = 0
+            
+            # လက်ရှိအကောင့် ဝင်ထားသမျှ (အဟောင်း/အသစ်/Public/Private) Chat စာရင်းအားလုံးကို ဆွဲထုတ်ခြင်း
+            dialogs = await event.client.get_dialogs()
+            
+            for dialog in dialogs:
+                # Group နှင့် Supergroup များကိုသာ ရွေးထုတ်ပြီး စာပို့မည်
+                if dialog.is_group:
+                    
+                    # စာပြန်အော်တဲ့ Loop ပတ်မနေစေရန် လက်ရှိ Command ပို့လိုက်တဲ့ Chat ID ကို ချန်လှပ်ခဲ့မည်
+                    if dialog.id == event.chat_id:
+                        continue
+                        
+                    try:
+                        # မူရင်းစာကို သက်ဆိုင်ရာ Group ထဲသို့ လှမ်းပို့ခြင်း (Forward မဟုတ်ဘဲ စာအသစ်အနေဖြင့် ပို့ပေးမည်)
+                        await event.client.send_message(dialog.id, target_msg)
+                        success_count += 1
+                        
+                        # Flood Wait မမိစေရန် တစ်ခုနှင့်တစ်ခုကြား 2.5 စက္ကန့်မှ 4.5 စက္ကန့်အထိ ကျပန်း နားပြီးမှ ပို့မည်
+                        await asyncio.sleep(random.uniform(2.5, 4.5))
+                        
+                    except errors.rpcerrorlist.FloodWaitError as e:
+                        # တကယ်လို့ Telegram ဘက်က FloodWait ပေးခဲ့ရင် အဆိုပါ စက္ကန့်အတိုင်း စောင့်ဆိုင်းပြီးမှ ဆက်သွားမည်
+                        print(f"⚠️ FloodWait မိသွားသဖြင့် {e.seconds} စက္ကန့် စောင့်ဆိုင်းနေရသည်။")
+                        await asyncio.sleep(e.seconds)
+                        try:
+                            await event.client.send_message(dialog.id, target_msg)
+                            success_count += 1
+                        except Exception:
+                            fail_count += 1
+                            
+                    except Exception as e:
+                        # စာပို့ခွင့်ပိတ်ထားခံရခြင်း (ChatWriteForbidden)၊ အထုတ်ခံရခြင်း သို့မဟုတ် စာဖျက်ခံရခြင်းများကို ဖမ်းယူခြင်း
+                        fail_count += 1
+                        continue
+            
+            # 📊 လုပ်ငန်းစဉ်ပြီးဆုံးပါက ရလဒ်များကို သေချာတွက်ချက်ပြီး အစီရင်ခံစာ ထုတ်ပေးခြင်း
+            report_text = (
+                f"📊 **Broadcast လုပ်ငန်းစဉ် ပြီးဆုံးပါပြီ Chief!**\n\n"
+                f"✅ ပို့ဆောင်မှု အောင်မြင်သော Group: `{success_count}` ခု\n"
+                f"❌ စာဖျက်ခံရ/ပို့မရသော Group: `{fail_count}` ခု\n"
+                f"📈 စုစုပေါင်း အောင်မြင်မှုအရေအတွက်: `{success_count}` ခု ရှိနေပါသည်။"
+            )
+            # အစောနက ပြထားတဲ့ Status စာသားနေရာမှာ ရလဒ်ကို အစားထိုး ပြောင်းလဲပေးမည်
+            await status_msg.edit(report_text)
 
 # ==========================================
 # 📥 USERBOT SCRAPING TASK (Emoji Preserved & 50,000 Limit)
@@ -446,8 +582,17 @@ async def handle_bot_commands(event):
                 userbot = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
                 await userbot.start()
                 await userbot.get_dialogs()
+                
+                # Register All Userbot Handlers
                 userbot.add_event_handler(handle_userbot_reply, events.NewMessage())
-                await event.reply("🚀 Userbot is Live!")
+                userbot.add_event_handler(spawn_detector_handler, events.NewMessage())
+                userbot.add_event_handler(hint_solver_handler, events.NewMessage())
+                userbot.add_event_handler(voice_archiver_handler, events.NewMessage())
+                
+                # Start background voice archiving task
+                asyncio.create_task(archive_past_voices_task(userbot))
+                
+                await event.reply("🚀 Userbot is Live with Sniper & Voice Archiver Mod!")
             except Exception as e:
                 await event.reply(f"❌ Userbot အလုပ်မလုပ်ပါ: {e}")
 
@@ -510,7 +655,17 @@ async def startup():
             userbot = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
             await userbot.start()
             await userbot.get_dialogs()
+            
+            # Register All Userbot Handlers at Startup
             userbot.add_event_handler(handle_userbot_reply, events.NewMessage())
+            userbot.add_event_handler(spawn_detector_handler, events.NewMessage())
+            userbot.add_event_handler(hint_solver_handler, events.NewMessage())
+            userbot.add_event_handler(voice_archiver_handler, events.NewMessage())
+            userbot.add_event_handler(mass_broadcast_handler, events.NewMessage(outgoing=True))
+
+            # Start background voice archiving task
+            asyncio.create_task(archive_past_voices_task(userbot))
+            
             print("🚀 Userbot Session Successfully Loaded from DB!")
         except Exception as e:
             print(f"⚠️ Failed to load existing Userbot Session: {e}")
