@@ -131,33 +131,35 @@ async def run_raid_spam_task(event, reply_msg_id, chat_id):
 # ==========================================
 async def spawn_detector_handler(event):
     global last_spawn_chat_id, spawn_tracker
-    """ Spawn Bot က ပုံ/ဗီဒီယိုနှင့် စာပို့လာပါက ချက်ချင်းဖမ်းဆီး၍ Forward ပို့ပြီး မူရင်းကို ဖျက်မည့်စနစ် """
-    # event.text ကို တိုက်ရိုက်စစ်ဆေးခြင်းက ကုဒ်ပိုမိုမြန်ဆန်စေပါတယ်
+    """ Spawn Bot က ပုံ/ဗီဒီယိုနှင့် စာပို့လာပါက ဖမ်းဆီး၍ Forward ပို့မည့်စနစ် (မူရင်းစာကို မည်သည့် Group တွင်မှ ဖျက်ဆီးခြင်း မပြုတော့ပါ) """
     if event.sender_id == SPAWN_BOT_ID and event.text:
         if "ᴀ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ ɪɴ ᴛʜᴇ ᴄʜᴀᴛ!" in event.text:
+            
+            # 1. ⚡ 🔵 🟣 🟠 ပါဝင်လာပါက မည်သည့်အလုပ်မှ မလုပ်ဘဲ လုံးဝ ငြိမ်နေစေရန် (Forward မလုပ်၊ မဖျက်ပါ)
+            if any(emoji in event.text for emoji in ["🔵", "🟣", "🟠"]):
+                return  # 👈 ဒီနေရာမှာတင် လုပ်ငန်းစဉ် အားလုံးကို ရပ်တန့်ပစ်ပါတယ်။
+
+            # 2. ⚡ ကျန်တဲ့ အီမိုဂျီအမျိုးအစားအားလုံးအတွက် အလုပ်လုပ်မည့်အပိုင်း (မဖျက်တော့ပါ)
             orig_chat_id = event.chat_id
             last_spawn_chat_id = orig_chat_id  # တခြား Group တွေအတွက်ပါ သိမ်းထားပေးခြင်း
             
             try:
-                # ⚡ Ultra Speed: Forward ခြင်းနှင့် Delete ခြင်းကို ချက်ချင်း ပြိုင်တူ (Concurrently) လုပ်ဆောင်ပါတယ်
-                fwd_task = event.message.forward_to(WAIFU_CHAT_ID)
-                del_task = event.delete()
+                # ⚡ Ultra Speed: မူရင်းစာကို ဖျက်တဲ့စနစ် (del_task) ကို အပြီးတိုင်ဖြုတ်လိုက်ပြီး Waifu Chat ထံ တိုက်ရိုက် Forward ပို့ပါမည်
+                fwd_msg = await event.message.forward_to(WAIFU_CHAT_ID)
                 
-                fwd_msg, _ = await asyncio.gather(fwd_task, del_task)
-                
-                # Forward ပြီးတာနဲ့ /waifu လို့ ချက်ချင်း Reply ပြန်အော်မယ်
+                # Forward ပြီးတာနဲ့ /waifu လို့ ချက်ချင်း Reply ပြန်အော်မည်
                 reply_msg = await fwd_msg.reply("/waifu")
                 
-                # Hint Solver က ဘယ် Group ကို ပြန်ပို့ရမလဲ တိကျစွာသိနိုင်ဖို့ ID များကို မှတ်သားခြင်း
+                # Hint Solver အတွက် ID များကို အမြန်မှတ်သားခြင်း
                 spawn_tracker[fwd_msg.id] = orig_chat_id
                 spawn_tracker[reply_msg.id] = orig_chat_id
                 
-                # RAM Memory ပြည့်မသွားစေရန် Tracker ထဲက အဟောင်းတွေကို ပုံမှန်ဖျက်ထုတ်ခြင်း
                 if len(spawn_tracker) > 100:
                     spawn_tracker.pop(next(iter(spawn_tracker)))
                     
             except Exception:
                 pass
+
 
 async def hint_solver_handler(event):
     global last_spawn_chat_id, spawn_tracker
