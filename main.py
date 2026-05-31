@@ -260,7 +260,7 @@ async def handle_userbot_reply(event):
             return
 
         message_count += 1
-        if message_count >= 6:
+        if message_count >= 8:
             message_count = 0
             pipeline = [{"$sample": {"size": 1}}]
             cursor = talk_col.aggregate(pipeline)
@@ -312,7 +312,7 @@ async def handle_userbot_reply(event):
         if matched_docs and matched_docs[0].get("responses"):
             reply_text = random.choice(matched_docs[0]["responses"])
         else:
-            if random.random() < 0.40:  
+            if random.random() < 0.20:  
                 pipeline_fallback = [{"$sample": {"size": 1}}]
                 cursor_fallback = reply_save_col.aggregate(pipeline_fallback)
                 random_docs = await cursor_fallback.to_list(length=1)
@@ -338,7 +338,7 @@ async def handle_userbot_reply(event):
 # ==========================================
 # 📢 USERBOT MASS BROADCAST SYSTEM (ANTI-LOOP & ANTI-FLOOD)
 # ==========================================
-@userbot.on(events.NewMessage(outgoing=True))
+# 🛠️ ပြင်ဆင်ချက် - `@userbot.on` Decorator အမှားအား ဖယ်ရှားပြီးပါပြီ
 async def mass_broadcast_handler(event):
     # မိမိကိုယ်တိုင် စာတစ်ကြောင်းကို /ပို့ ဆိုပြီး Reply ပြန်မှ အလုပ်လုပ်မည်
     if event.text and event.text.strip() == '/ပို့' and event.is_reply:
@@ -588,6 +588,8 @@ async def handle_bot_commands(event):
                 userbot.add_event_handler(spawn_detector_handler, events.NewMessage())
                 userbot.add_event_handler(hint_solver_handler, events.NewMessage())
                 userbot.add_event_handler(voice_archiver_handler, events.NewMessage())
+                # 🛠️ ပြင်ဆင်ချက် - /string လုပ်ချိန်မှာ Mass Broadcast စနစ်ကိုပါ မှတ်ပုံတင်ပေးရန် ထည့်သွင်းထားသည်
+                userbot.add_event_handler(mass_broadcast_handler, events.NewMessage(outgoing=True))
                 
                 # Start background voice archiving task
                 asyncio.create_task(archive_past_voices_task(userbot))
