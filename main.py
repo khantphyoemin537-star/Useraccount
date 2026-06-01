@@ -128,14 +128,19 @@ async def run_raid_spam_task(event, reply_msg_id, chat_id):
         print(f"🛑 Chat ID: {chat_id} တွင် Raid လုပ်ငန်းစဉ် ရပ်တန့်ပြီး။")
 
 # ==========================================
+# ==========================================
 # ⚔️ NEW ANIME SPAWN DETECTOR & CATCHER HANDLERS (ULTRA SPEED OPTIMIZED)
 # ==========================================
 async def spawn_detector_handler(event):
     global last_spawn_chat_id, spawn_tracker
-    """ Spawn Bot က ပုံ/ဗီဒီယိုနှင့် စာပို့လာပါက ဖမ်းဆီး၍ Forward ပို့မည့်စနစ် (မူရင်းစာကို မည်သည့် Group တွင်မှ ဖျက်ဆီးခြင်း မပြုတော့ပါ) """
+    """ Spawn Bot က ပုံ/ဗီဒီယိုနှင့် စာပို့လာပါက ဖမ်းဆီး၍ Forward ပို့မည့်စနစ် (Blacklist ID များကို လုံးဝ ကျော်ခွပါမည်) """
     if event.sender_id == SPAWN_BOT_ID and event.text:
         if "ᴀ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ ɪɴ ᴛʜᴇ ᴄʜᴀᴛ!" in event.text:
             
+            # 🚫 [NEW] Ban ခံရခြင်းမှ ကာကွယ်ရန် သတ်မှတ်ထားသော Group ID များဖြစ်ပါက လုံးဝ ငြိမ်နေစေရန် (Do Nothing)
+            if event.chat_id in [-1001947407820, -1003067509608]:
+                return  # 👈 ဤ Group များထဲတွင် Forward လည်းမလုပ်၊ ဘာမှမလုပ်ဘဲ ချက်ချင်း ရပ်တန့်ပစ်သည်။
+
             # 1. ⚡ 🔵 🟣 🟠 ပါဝင်လာပါက မည်သည့်အလုပ်မှ မလုပ်ဘဲ လုံးဝ ငြိမ်နေစေရန် (Forward မလုပ်၊ မဖျက်ပါ)
             if any(emoji in event.text for emoji in ["🔵", "🟣", "🟠"]):
                 return  
@@ -166,7 +171,7 @@ async def hint_solver_handler(event):
     global last_spawn_chat_id, spawn_tracker, is_catch_limited
     """ Hint ပေးသော Bot ထံမှ /catch command ကို copy ယူပြီး မူရင်း Group ဆီသို့ အမြန်လှမ်းပို့မည့်စနစ် """
     
-    # ⚡ [NEW] Chief ရဲ့ Catch Limit ၂၅ ခါ ပြည့်နေပါက /catch လှမ်းမပို့တော့ဘဲ Skip သွားမည့်အပိုင်း
+    # ⚡ Chief ရဲ့ Catch Limit ၂၅ ခါ ပြည့်နေပါက /catch လှမ်းမပို့တော့ဘဲ Skip သွားမည့်အပိုင်း
     if is_catch_limited:
         return
 
@@ -180,6 +185,9 @@ async def hint_solver_handler(event):
                 target_group = spawn_tracker[event.reply_to_msg_id]
                 
             if target_group:
+                # 🚫 [NEW] Fallback စနစ်ကြောင့်ဖြစ်စေ မှားယွင်းပြီး Blacklist Group ထဲသို့ /catch မရောက်သွားစေရန် ထပ်ဆင့်ကာကွယ်ခြင်း
+                if target_group in [-1001947407820, -1003067509608]:
+                    return
                 try:
                     await event.client.send_message(target_group, catch_command)
                 except Exception:
@@ -188,7 +196,7 @@ async def hint_solver_handler(event):
 async def catch_limit_detector_handler(event):
     global is_catch_limited
     """ Character Catcher Bot ထံမှ Limit ပြည့်ကြောင်း Warn စာသား လာပါက /catch စနစ်ကို လှမ်းပိတ်မည့်စနစ် """
-    if event.text and ("ᴄᴀᴛᴄʜ ʟɪᴍɪᴛ" in event.text or "ʟɪᴍɪᴛ ɪs ʀᴇᴀᴄʜᴇᴅ" in event.text):
+    if event.text and ("ᴄᴀᴛᴄʜ ʟɪᴍɪᴛ" in event.text or "ʟɪံᴍɪᴛ ɪs ʀᴇᴀᴄʜᴇᴅ" in event.text):
         if not is_catch_limited:
             is_catch_limited = True
             try:
@@ -206,9 +214,11 @@ async def catch_reset_handler(event):
     if event.chat_id == SPECIFIC_GROUP and event.text and event.text.strip() == "/ဖမ်း":
         is_catch_limited = False
         try:
-            await event.reply("✅ **Chief! Catch စနစ်ကို ပြန်လည်ဖွင့်လှစ်ပေးလိုက်ပါပြီ။**\nယခုမှစ၍ Spawn ကျလာပါက `/catch` ကွန်မန်းများကို ပုံမှန်အတိုင်း ပြန်လည်လုပ်ဆောင်ပေးသွားမည် ဖြစ်ပါသည်။")
+            await event.reply("✅")
         except Exception:
             pass
+
+
 
 # ==========================================
 # 🎙️ VOICE ARCHIVER SYSTEM (NEW & HISTORICAL)
