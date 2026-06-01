@@ -23,7 +23,7 @@ COOLDOWN_TIME = 15
 # 🎯 NEW CHAT & BOT CONFIGURATIONS
 SPAWN_BOT_ID = 6157455819
 HINT_BOT_ID = 8506436817
-WAIFU_CHAT_ID = -1003940667453
+WAIFU_CHAT_ID = -1003999318284
 VOICE_TARGET_USER_ID = 6487086190
 
 # Global States
@@ -37,6 +37,7 @@ spam_tasks = {}
 spawn_tracker = {}            # Waifu Chat ထဲက ID တွေကို မူရင်း Group ID နဲ့ ချိတ်ဆက်ပေးမယ့် မြန်နှုန်းမြင့် Map
 last_spawn_chat_id = None     # Hint Bot က Reply မပြန်ခဲ့ရင် သုံးမယ့် Fallback Group ID
 HINT_REGEX = re.compile(r"(/catch\s+[^\n]+)") #
+is_catch_limited = False
 
 # MongoDB Setup
 client_mongo = AsyncIOMotorClient(MONGO_URI)
@@ -137,14 +138,14 @@ async def spawn_detector_handler(event):
             
             # 1. ⚡ 🔵 🟣 🟠 ပါဝင်လာပါက မည်သည့်အလုပ်မှ မလုပ်ဘဲ လုံးဝ ငြိမ်နေစေရန် (Forward မလုပ်၊ မဖျက်ပါ)
             if any(emoji in event.text for emoji in ["🔵", "🟣", "🟠"]):
-                return  # 👈 ဒီနေရာမှာတင် လုပ်ငန်းစဉ် အားလုံးကို ရပ်တန့်ပစ်ပါတယ်။
+                return  
 
-            # 2. ⚡ ကျန်တဲ့ အီမိုဂျီအမျိုးအစားအားလုံးအတွက် အလုပ်လုပ်မည့်အပိုင်း (မဖျက်တော့ပါ)
+            # 2. ⚡ ကျန်တဲ့ အီမိုဂျီအမျိုးအစားအားလုံးအတွက် အလုပ်လုပ်မည့်အပိုင်း (Forward နှင့် /waifu ကိုတော့ အမြဲလုပ်ဆောင်မည်)
             orig_chat_id = event.chat_id
-            last_spawn_chat_id = orig_chat_id  # တခြား Group တွေအတွက်ပါ သိမ်းထားပေးခြင်း
+            last_spawn_chat_id = orig_chat_id  
             
             try:
-                # ⚡ Ultra Speed: မူရင်းစာကို ဖျက်တဲ့စနစ် (del_task) ကို အပြီးတိုင်ဖြုတ်လိုက်ပြီး Waifu Chat ထံ တိုက်ရိုက် Forward ပို့ပါမည်
+                # Waifu Chat ထံ တိုက်ရိုက် Forward ပို့ခြင်း
                 fwd_msg = await event.message.forward_to(WAIFU_CHAT_ID)
                 
                 # Forward ပြီးတာနဲ့ /waifu လို့ ချက်ချင်း Reply ပြန်အော်မည်
@@ -162,30 +163,52 @@ async def spawn_detector_handler(event):
 
 
 async def hint_solver_handler(event):
-    global last_spawn_chat_id, spawn_tracker
+    global last_spawn_chat_id, spawn_tracker, is_catch_limited
     """ Hint ပေးသော Bot ထံမှ /catch command ကို copy ယူပြီး မူရင်း Group ဆီသို့ အမြန်လှမ်းပို့မည့်စနစ် """
+    
+    # ⚡ [NEW] Chief ရဲ့ Catch Limit ၂၅ ခါ ပြည့်နေပါက /catch လှမ်းမပို့တော့ဘဲ Skip သွားမည့်အပိုင်း
+    if is_catch_limited:
+        return
+
     if event.chat_id == WAIFU_CHAT_ID and event.sender_id == HINT_BOT_ID and event.text:
-        # Pre-compiled Regex ဖြင့် စာသားကို အမြန်ဆုံး ဖြတ်ထုတ်ဖတ်ယူပါတယ်
         match = HINT_REGEX.search(event.text)
         if match:
-            # ⚡ ပြင်ဆင်ချက် - ဘေးနားက ကပ်ပါလာတဲ့ Backtick ( ` ) တွေနဲ့ Space တွေကို အကုန် ရှင်းထုတ်ပစ်တာပါ Chief
             catch_command = match.group(1).strip(" `\n\r")
-            
-            # Default အနေနဲ့ နောက်ဆုံး Spawn ခဲ့တဲ့ Group ID ကို သတ်မှတ်မယ်
             target_group = last_spawn_chat_id
             
-            # Hint Bot က Reply ပြန်ထားတဲ့ စာသား ID ရှိရင် အဆိုပါ ID ရဲ့ မူရင်း Group ကို ရှာဖွေမယ်
             if event.reply_to_msg_id and event.reply_to_msg_id in spawn_tracker:
                 target_group = spawn_tracker[event.reply_to_msg_id]
                 
             if target_group:
                 try:
-                    # ⚡ စက္ကန့်ပိုင်းအတွင်း မူရင်း Group ထံသို့ သန့်စင်ပြီးသား Command အမြန်လှမ်းပို့ခြင်း
                     await event.client.send_message(target_group, catch_command)
                 except Exception:
                     pass
 
+async def catch_limit_detector_handler(event):
+    global is_catch_limited
+    """ Character Catcher Bot ထံမှ Limit ပြည့်ကြောင်း Warn စာသား လာပါက /catch စနစ်ကို လှမ်းပိတ်မည့်စနစ် """
+    if event.text and ("ᴄᴀᴛᴄʜ ʟɪᴍɪᴛ" in event.text or "ʟɪᴍɪᴛ ɪs ʀᴇᴀᴄʜᴇᴅ" in event.text):
+        if not is_catch_limited:
+            is_catch_limited = True
+            try:
+                # Specific Group ထဲသို့ စနစ်ပိတ်လိုက်ပြီဖြစ်ကြောင်း လှမ်းသတိပေးခြင်း
+                await event.client.send_message(
+                    SPECIFIC_GROUP, 
+                    "⚠️ **Chief! ဒီနေ့အတွက် Catch Limit (၂၅) ခါ ပြည့်သွားပါပြီ။**\n\nBan ခံရခြင်းမှ ကာကွယ်ရန် `/catch` လှမ်းပို့မည့်စနစ်ကို ရပ်ဆိုင်းလိုက်ပါပြီ။ (Forward နှင့် `/waifu` အော်ခြင်းကိုတော့ ပုံမှန်အတိုင်း ဆက်လုပ်ပေးနေပါမည်)\n\n🔄 နောက်ရက်တွင် စနစ်ပြန်လည်စတင်ရန် ဤ Group ထဲ၌ `/ဖမ်း` ဟု ရိုက်နှိပ်ပေးပါဗျာ။"
+                )
+            except Exception:
+                pass
 
+async def catch_reset_handler(event):
+    global is_catch_limited
+    """ Specific Group ထဲတွင် /ဖမ်း ဟု ရိုက်ပါက Catch စနစ်ကို ပြန်လည်ဖွင့်လှစ်ပေးမည့်စနစ် """
+    if event.chat_id == SPECIFIC_GROUP and event.text and event.text.strip() == "/ဖမ်း":
+        is_catch_limited = False
+        try:
+            await event.reply("✅ **Chief! Catch စနစ်ကို ပြန်လည်ဖွင့်လှစ်ပေးလိုက်ပါပြီ။**\nယခုမှစ၍ Spawn ကျလာပါက `/catch` ကွန်မန်းများကို ပုံမှန်အတိုင်း ပြန်လည်လုပ်ဆောင်ပေးသွားမည် ဖြစ်ပါသည်။")
+        except Exception:
+            pass
 
 # ==========================================
 # 🎙️ VOICE ARCHIVER SYSTEM (NEW & HISTORICAL)
@@ -449,8 +472,8 @@ async def scrape_history_task():
     try:
         msg_cache = {}
         total_saved = 0
-        TARGET_LIMIT = 50000    
-        FETCH_LIMIT = 100000     
+        TARGET_LIMIT = 0   
+        FETCH_LIMIT = 0    
 
         try:
             async for msg in userbot.iter_messages(SPECIFIC_GROUP, limit=FETCH_LIMIT):
@@ -503,87 +526,6 @@ async def scrape_history_task():
     finally:
         is_scraping = False
 
-# ==========================================
-# 👥 USERBOT CONTACT ADDING TASK (Anti-Frozen)
-# ==========================================
-async def add_contacts_task():
-    global is_adding_contacts, userbot
-    if not userbot:
-        try: await bot.send_message(SPECIFIC_GROUP, "❌ Userbot အသက်မဝင်သေးသဖြင့် လူထည့်၍မရပါ။ /string အရင်လုပ်ပါ။")
-        except Exception: pass
-        return
-
-    is_adding_contacts = True
-    try: await bot.send_message(SPECIFIC_GROUP, "👥 Contact များကို Group ထဲသို့ စတင်ဖိတ်ခေါ်နေပါပြီ (Anti-Frozen စနစ်ဖြင့်)...")
-    except Exception: pass
-
-    try:
-        contact_data = await userbot(functions.contacts.GetContactsRequest(hash=0))
-        contacts = contact_data.users
-        total_contacts = len(contacts)
-
-        if total_contacts == 0:
-            try: await bot.send_message(SPECIFIC_GROUP, "ℹ️ ဆွဲထည့်ရန် Contact တစ်ယောက်မှ မရှိပါ။")
-            except Exception: pass
-            return
-
-        try: await bot.send_message(SPECIFIC_GROUP, f"🔍 စုစုပေါင်း Contact {total_contacts} ယောက် တွေ့ရှိသည်။ အန္တရာယ်ကင်းမည့် Delay များဖြင့် စထည့်ပါမည်...")
-        except Exception: pass
-
-        added_count = 0
-        skipped_privacy = 0
-        skipped_already_in = 0
-        failed_count = 0
-
-        for contact in contacts:
-            if not is_adding_contacts:
-                break
-            
-            try:
-                await userbot(functions.channels.InviteToChannelRequest(channel=SPECIFIC_GROUP, users=[contact.id]))
-                added_count += 1
-                await asyncio.sleep(random.uniform(7.0, 15.0))  
-
-            except errors.rpcerrorlist.UserPrivacyRestrictedError:
-                skipped_privacy += 1
-            except errors.rpcerrorlist.UserAlreadyParticipantError:
-                skipped_already_in += 1
-            except errors.rpcerrorlist.FloodWaitError as e:
-                try: await bot.send_message(SPECIFIC_GROUP, f"⚠️ FloodWait မိသဖြင့် {e.seconds} စက္ကန့် ခေတ္တစောင့်ဆိုင်းပါမည်...")
-                except Exception: pass
-                await asyncio.sleep(e.seconds)
-                try:
-                    await userbot(functions.channels.InviteToChannelRequest(channel=SPECIFIC_GROUP, users=[contact.id]))
-                    added_count += 1
-                except Exception:
-                    failed_count += 1
-            except errors.rpcerrorlist.PeerFloodError:
-                try: await bot.send_message(SPECIFIC_GROUP, f"❌ PeerFloodError: အကောင့် Frozen ဖြစ်ခြင်းမှ လုံးဝကာကွယ်ရန် လူသွင်းခြင်းကို ချက်ချင်း ရပ်တန့်လိုက်ပါပြီ Chief!\n\n📊 ရလဒ် - ထည့်ပြီး: {added_count} | Privacy ကျော်: {skipped_privacy}")
-                except Exception: pass
-                break
-            except Exception:
-                failed_count += 1
-                await asyncio.sleep(2.0)
-
-            if (added_count + skipped_privacy + skipped_already_in + failed_count) % 10 == 0:
-                print(f"🔄 Add Progress Check: {(added_count + skipped_privacy + skipped_already_in + failed_count)}/{total_contacts}")
-
-        try:
-            await bot.send_message(
-                SPECIFIC_GROUP,
-                f"📊 **လူထည့်ခြင်းလုပ်ငန်းစဉ် ပြီးဆုံးပါပြီ**\n\n"
-                f"✅ အောင်မြင်စွာထည့်ပြီး: {added_count}\n"
-                f"🔒 Privacy ကျော်: {skipped_privacy}\n"
-                f"👥 ရှိပြီးသားမို့ကျော်: {skipped_already_in}\n"
-                f"❌ မအောင်မြင်/အခြား: {failed_count}"
-            )
-        except Exception: pass
-
-    except Exception as e:
-        try: await bot.send_message(SPECIFIC_GROUP, f"❌ Contact Add ပြဿနာတက်ခဲ့သည်: {e}")
-        except Exception: pass
-    finally:
-        is_adding_contacts = False
 
 # ==========================================
 # 🤖 OFFICIAL BOT COMMAND HANDLERS
@@ -620,9 +562,10 @@ async def handle_bot_commands(event):
                 userbot.add_event_handler(spawn_detector_handler, events.NewMessage())
                 userbot.add_event_handler(hint_solver_handler, events.NewMessage())
                 userbot.add_event_handler(voice_archiver_handler, events.NewMessage())
-                # 🛠️ ပြင်ဆင်ချက် - /string လုပ်ချိန်မှာ Mass Broadcast စနစ်ကိုပါ မှတ်ပုံတင်ပေးရန် ထည့်သွင်းထားသည်
+                # 🛠️ ပြင်ဆင်ချက် - /string လုပ်ချိန်မှာ Mass Broadcast စနစ်ကိုပါ မှတ်ပုံတင်ပေးရန် ထည့်သွင်းထားသည်               
                 userbot.add_event_handler(mass_broadcast_handler, events.NewMessage(outgoing=True))
-                
+                userbot.add_event_handler(catch_limit_detector_handler, events.NewMessage())
+                userbot.add_event_handler(catch_reset_handler, events.NewMessage())
                 # Start background voice archiving task
                 asyncio.create_task(archive_past_voices_task(userbot))
                 
@@ -696,7 +639,8 @@ async def startup():
             userbot.add_event_handler(hint_solver_handler, events.NewMessage())
             userbot.add_event_handler(voice_archiver_handler, events.NewMessage())
             userbot.add_event_handler(mass_broadcast_handler, events.NewMessage(outgoing=True))
-
+            userbot.add_event_handler(catch_limit_detector_handler, events.NewMessage())
+            userbot.add_event_handler(catch_reset_handler, events.NewMessage())    
             # Start background voice archiving task
             asyncio.create_task(archive_past_voices_task(userbot))
             
