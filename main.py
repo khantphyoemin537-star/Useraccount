@@ -195,7 +195,7 @@ async def hint_solver_handler(event):
                 if target_group in [-1001947407820, -1003067509608]:
                     return
                 try:
-                    delay_time = random.uniform(1.2, 2.5) 
+                    delay_time = random.uniform(1.2, 1.6) 
                     
                     async with event.client.action(target_group, 'typing'):
                         await asyncio.sleep(delay_time)
@@ -210,16 +210,19 @@ async def hint_solver_handler(event):
                 except Exception as e:
                     print(f"❌ Catch Error: {e}")
 
-# 📦 [NEW] ကတ်မိတဲ့အောင်မြင်မှု Report များကို Specific Group ထံ Forward ပေးမည့်စနစ်
+# 📦 [UPDATED] မိမိကိုယ်တိုင် ဖမ်းမိတဲ့ ကတ် Report များကိုသာ Specific Group ထံ Forward ပေးမည့်စနစ်
 async def catch_success_forwarder_handler(event):
-    """ Spawn Bot က ကတ်မိသွားလို့ ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ! ဟု ပို့လာပါက Specific Group သို့ လှမ်းပို့ပေးခြင်း """
+    """ Spawn Bot က ကတ်မိသွားလို့ ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ! ဟု ပို့လာပြီး မိမိကို Mention ခေါ်ထားမှသာ Forward ပေးမည် """
     if event.sender_id == SPAWN_BOT_ID and event.text:
-        if "ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ!" in event.text:
+        
+        # 🔍 စာသားထဲမှာ ပါဝင်ရမည့်အပြင် event.message.mentioned (မိမိအကောင့်ကို Tag ခေါ်ထားခြင်း) ဖြစ်မှသာ အလုပ်လုပ်မည်
+        if "ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ!" in event.text and event.message.mentioned:
             try:
                 await event.message.forward_to(SPECIFIC_GROUP)
-                print("📦 Forwarded success catch card report to SPECIFIC_GROUP.")
+                print("📦 Forwarded YOUR OWN success catch card report to SPECIFIC_GROUP.")
             except Exception as e:
                 print(f"❌ Success Card Forward Error: {e}")
+
 
 
 # ==========================================
