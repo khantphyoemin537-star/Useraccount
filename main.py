@@ -145,7 +145,7 @@ async def spawn_detector_handler(event):
         if "ᴀ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ ɪɴ ᴛʜᴇ ᴄʜᴀᴛ!" in event.text:
             
             # 🚫 Ban ခံရခြင်းမှ ကာကွယ်ရန် သတ်မှတ်ထားသော Group ID များဖြစ်ပါက လုံးဝ ငြိမ်နေစေရန်
-            if event.chat_id in [-1001947407820, -1003067509608]:
+            if event.chat_id in [-1001947407821, -1003067509601]:
                 return  
 
             # 1. ⚡ 🔵 🟣 🟠 ပါဝင်လာပါက မည်သည့်အလုပ်မှ မလုပ်ဘဲ လုံးဝ ငြိမ်နေစေရန်
@@ -192,10 +192,10 @@ async def hint_solver_handler(event):
                 target_group = spawn_tracker[event.reply_to_msg_id]
                 
             if target_group:
-                if target_group in [-1001947407820, -1003067509608]:
+                if target_group in [-1001947407821, -1003067509601]:
                     return
                 try:
-                    delay_time = random.uniform(1.2, 1.6) 
+                    delay_time = random.uniform(0.5, 0.8) 
                     
                     async with event.client.action(target_group, 'typing'):
                         await asyncio.sleep(delay_time)
