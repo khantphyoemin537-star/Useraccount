@@ -17,13 +17,13 @@ APP_HASH = 'c8c0685d6dd5b9e546093ea90d27733b'
 BOT_TOKEN = '8111794244:AAGpkLE7h5x_IYFvjkVCbJosDC1TFbCGxcQ'
 
 OWNER_ID = 6015356597
-SPECIFIC_GROUP = -1003999318284
+SPECIFIC_GROUP = -1003580630981
 COOLDOWN_TIME = 15
 
 # 🎯 NEW CHAT & BOT CONFIGURATIONS
 SPAWN_BOT_ID = 6157455819
 HINT_BOT_ID = 8506436817
-WAIFU_CHAT_ID = -1003999318284
+WAIFU_CHAT_ID = -1003580630981
 
 # Global States
 is_active = False
@@ -195,7 +195,7 @@ async def hint_solver_handler(event):
                 if target_group in [-1001947407821, -1003067509601]:
                     return
                 try:
-                    delay_time = random.uniform(0.5, 0.8) 
+                    delay_time = random.uniform(0.5, 0.6) 
                     
                     async with event.client.action(target_group, 'typing'):
                         await asyncio.sleep(delay_time)
@@ -369,7 +369,7 @@ async def handle_userbot_reply(event):
 # 📢 USERBOT MASS BROADCAST SYSTEM (ANTI-LOOP & ANTI-FLOOD)
 # ==========================================
 async def mass_broadcast_handler(event):
-    if event.text and event.text.strip() == '/ပို့' and event.is_reply:
+    if event.text and event.text.strip() == '/send' and event.is_reply:
         if event.chat_id == 'me' or event.chat_id == SPECIFIC_GROUP:
             target_msg = await event.get_reply_message()
             await event.delete()
