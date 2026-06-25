@@ -14,7 +14,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 MONGO_URI = "mongodb+srv://khantphyoemin537_db_user:9VRKiaeZkz7rJdpz@cluster0.w6tgi8j.mongodb.net/telegram_bot?appName=Cluster0&tlsAllowInvalidCertificates=true"
 APP_ID = 39584681
 APP_HASH = 'c8c0685d6dd5b9e546093ea90d27733b'
-BOT_TOKEN = '8111794244:AAGpkLE7h5x_IYFvjkVCbJosDC1TFbCGxcQ'
+BOT_TOKEN = '8575371720:AAHZJ-aP6mUsWIz4tl6k-S5Er23eXRIDYOs'
 
 OWNER_ID = 6015356597
 SPECIFIC_GROUP = -1003999318284
@@ -271,7 +271,7 @@ async def handle_bot_commands(event):
             userbot.add_event_handler(hint_solver_handler, events.NewMessage())
             userbot.add_event_handler(catch_success_forwarder_handler, events.NewMessage()) 
             
-            await event.reply("🚀 Userbot is Live with Manual Sniper Mod!")
+            await event.reply("🚀 Userbot is Live with Manual Sniper Mod! မော်ဂန့်တပည့် မားကတ်ကတ်စကောက်ပါပီ")
         except Exception as e:
             await event.reply(f"❌ Userbot အလုပ်မလုပ်ပါ: {e}")
 
