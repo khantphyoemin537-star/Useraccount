@@ -14,7 +14,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 MONGO_URI = "mongodb+srv://khantphyoemin537_db_user:9VRKiaeZkz7rJdpz@cluster0.w6tgi8j.mongodb.net/telegram_bot?appName=Cluster0&tlsAllowInvalidCertificates=true"
 APP_ID = 39584681
 APP_HASH = 'c8c0685d6dd5b9e546093ea90d27733b'
-BOT_TOKEN = '8575371720:AAHZJ-aP6mUsWIz4tl6k-S5Er23eXRIDYOs'
+BOT_TOKEN = '8738081667:AAHADgcDISntnOBwT3uj2yYw7n3XJUN2uZI'
 
 OWNER_ID = 6015356597
 SPECIFIC_GROUP = -1003999318284
