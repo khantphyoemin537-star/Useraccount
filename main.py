@@ -18,12 +18,14 @@ BOT_TOKEN = '8575371720:AAHZJ-aP6mUsWIz4tl6k-S5Er23eXRIDYOs'
 
 OWNER_ID = 6015356597
 SPECIFIC_GROUP = -1003999318284
+MATRIX_GROUP_ID = -1003806830045  # 👈 [NEW] Matrix Group ID
 COOLDOWN_TIME = 15
 
 # 🎯 NEW CHAT & BOT CONFIGURATIONS
 SPAWN_BOT_ID = 6157455819
 HINT_BOT_ID = 8552029570
 WAIFU_CHAT_ID = -1003999318284
+
 # Global States
 is_active = False
 is_scraping = False
@@ -35,7 +37,12 @@ spam_tasks = {}
 spawn_tracker = {}            # Waifu Chat ထဲက ID တွေကို မူရင်း Group ID နဲ့ ချိတ်ဆက်ပေးမယ့် မြန်နှုန်းမြင့် Map
 last_spawn_chat_id = None     # Hint Bot က Reply မပြန်ခဲ့ရင် သုံးမယ့် Fallback Group ID
 HINT_REGEX = re.compile(r"(/catch\s+[^\n]+)") 
-is_catch_stopped = False      # 👈 [NEW] OWNER က Manual ထိန်းချုပ်ရန် စတိတ် (Default: အလုပ်လုပ်မည်)
+is_catch_stopped = False      # 👈 OWNER က Manual ထိန်းချုပ်ရန် စတိတ် (Default: အလုပ်လုပ်မည်)
+
+# 🚀 [NEW] Power Ranger Global States
+is_powerranger_talking = False  # Talk On/Off Track လုပ်ရန်
+powerranger_speed = 2           # စကားပြောနှုန်း Speed (1, 2, 3) Default: 2
+powerranger_clients = []        # Unlimited Userbots Client များကို သိမ်းဆည်းရန် List
 
 # MongoDB Setup
 client_mongo = AsyncIOMotorClient(MONGO_URI)
@@ -43,7 +50,8 @@ db = client_mongo["telegram_bot"]
 reply_save_col = db["reply_save_col"]
 target_bots_col = db["target_bots"]  
 tomboy_col = db["tomboy_col"]  
-marcuz_col = db["marcuz_col"]  # 👈 [NEW] String Session / Useraccount လုပ်ဆောင်ချက်များအတွက် သီးသန့် Collection
+marcuz_col = db["marcuz_col"]        # 👈 String Session / Useraccount လုပ်ဆောင်ချက်များအတွက် သီးသန့် Collection
+powerranger_col = db["powerranger_col"]  # 👈 [NEW] အကန့်အသတ်မရှိ Userbots များအတွက် Database New Collection
 talk_col = db["random_talk"]   
 filters_col = db["filters"]
 
@@ -94,7 +102,7 @@ async def delete_bot_message_delayed(event, bot_msg_id, cmd_msg_id=0):
     except Exception as e:
         print(f"❌ Error during delayed deletion: {e}")
 
-# ⏱️ [NEW] /catch command အား ၁ စက္ကန့်အကြာတွင် အလိုအလျောက် ပြန်ဖျက်ပေးမည့် သီးသန့် Task
+# ⏱️ /catch command အား ၁ စက္ကန့်အကြာတွင် အလိုအလျောက် ပြန်ဖျက်ပေးမည့် သီးသန့် Task
 async def delete_catch_message_delayed(client, chat_id, msg_id):
     try:
         await asyncio.sleep(1)
@@ -178,7 +186,7 @@ async def hint_solver_handler(event):
     global last_spawn_chat_id, spawn_tracker, is_catch_stopped
     """ Hint ပေးသော Bot ထံမှ /catch command ကို copy ယူပြီး မူရင်း Group ဆီသို့ အမြန်လှမ်းပို့မည့်စနစ် """
     
-    # 🛑 [NEW] OWNER က stop ထားပါက /catch သွားမပို့တော့ဘဲ Skip မည်
+    # 🛑 OWNER က stop ထားပါက /catch သွားမပို့တော့ဘဲ Skip မည်
     if is_catch_stopped:
         return
 
@@ -204,31 +212,77 @@ async def hint_solver_handler(event):
                     sent_msg = await event.client.send_message(target_group, catch_command)
                     print(f"🎯 Caught character with delay {delay_time:.2f}s")
                     
-                    # 🗑️ [NEW] ပို့ပြီးတာနဲ့ ၁ စက္ကန့်အကြာမှာ ထို /catch မက်ဆေ့ချ်ကို ပြန်ဖျက်ခိုင်းခြင်း
+                    # 🗑️ ပို့ပြီးတာနဲ့ ၁ စက္ကန့်အကြာမှာ ထို /catch မက်ဆေ့ချ်ကို ပြန်ဖျက်ခိုင်းခြင်း
                     asyncio.create_task(delete_catch_message_delayed(event.client, target_group, sent_msg.id))
                     
                 except Exception as e:
                     print(f"❌ Catch Error: {e}")
 
-# 📦 [UPDATED] မိမိကိုယ်တိုင် ဖမ်းမိတဲ့ ကတ် Report များကိုသာ Specific Group ထံ Forward ပေးမည့်စနစ်
+# 📦 မိမိကိုယ်တိုင် ဖမ်းမိတဲ့ ကတ် Report များကိုသာ Specific Group ထံ Forward ပေးမည့်စနစ်
 async def catch_success_forwarder_handler(event):
     """ Spawn Bot က ကတ်မိသွားလို့ ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ! ဟု ပို့လာပြီး မိမိကို Mention ခေါ်ထားမှသာ Forward ပေးမည် """
     if event.sender_id == SPAWN_BOT_ID and event.text:
         
-        # 🔍 စာသားထဲမှာ ပါဝင်ရမည့်အပြင် event.message.mentioned (မိမိအကောင့်ကို Tag ခေါ်ထားခြင်း) ဖြစ်မှသာ အလုပ်လုပ်မည်
-        if "ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ!" in event.text and event.message.mentioned:
+        # 🛠️ ပြင်ဆင်ချက် ၁ - မူလက "ေ" ပါနေသည်ကို အင်္ဂလိပ် Small Capital "ᴇ" (ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ!) သို့ အမှန်ပြင်ဆင်ထားသည်။
+        if "ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ!" in event.text:
             try:
-                await event.message.forward_to(SPECIFIC_GROUP)
-                print("📦 Forwarded YOUR OWN success catch card report to SPECIFIC_GROUP.")
+                # မိမိအကောင့်ရဲ့ လက်ရှိ Profile Name ကို လှမ်းယူခြင်း
+                me = await event.client.get_me()
+                first_name = me.first_name or ""
+                last_name = me.last_name or ""
+                full_name = f"{first_name} {last_name}".strip()
+                
+                # 🛠️ ပြင်ဆင်ချက် ၂ - Tag မိတာအပြင်၊ မိမိရဲ့ Full Name (သို့) First Name စာသားပါနေရင်ပါ အလုပ်လုပ်စေရန် စစ်ဆေးခြင်း
+                if event.message.mentioned or (full_name and full_name in event.text) or (first_name and first_name in event.text):
+                    await event.message.forward_to(SPECIFIC_GROUP)
+                    print("📦 Forwarded YOUR OWN success catch card report to SPECIFIC_GROUP.")
+                    
             except Exception as e:
                 print(f"❌ Success Card Forward Error: {e}")
+
+
+# ==========================================
+# 🗣️ [NEW] POWER RANGER BACKGROUND TALKING TASK LOOP
+# ==========================================
+async def start_powerranger_talk_loop(client):
+    """ Power Ranger တစ်ခုချင်းစီအတွက် သီးသန့် Random စကားပြောပေးမည့် Background Loop စနစ် """
+    while True:
+        try:
+            if is_powerranger_talking:
+                # talk_col ထဲမှ random document တစ်ခု ဆွဲထုတ်ခြင်း
+                pipeline = [{"$sample": {"size": 1}}]
+                cursor = talk_col.aggregate(pipeline)
+                docs = await cursor.to_list(length=1)
+                
+                if docs:
+                    reply_text = docs[0].get("text") or docs[0].get("word") or docs[0].get("message")
+                    if reply_text:
+                        await client.send_message(MATRIX_GROUP_ID, reply_text)
+                
+                # Speed Option အလိုက် စောင့်ဆိုင်းမည့် အရှိန်ချိန်ညှိချက်များ
+                if powerranger_speed == 1:
+                    await asyncio.sleep(random.uniform(5.0, 7.0))    # Speed 1: နှေးနှေး
+                elif powerranger_speed == 3:
+                    await asyncio.sleep(random.uniform(0.6, 1.3))    # Speed 3: အလွန်မြန်
+                else:
+                    await asyncio.sleep(random.uniform(2.0, 3.5))    # Speed 2: ပုံမှန် အလယ်အလတ်
+            else:
+                # Talk Off ထားချိန်တွင် စတိတ်ကို ၂ စက္ကန့်တစ်ခါ လှမ်းစစ်မည်
+                await asyncio.sleep(2.0)
+        except errors.rpcerrorlist.FloodWaitError as e:
+            print(f"⚠️ Power Ranger FloodWait မိသွားသဖြင့် {e.seconds} စက္ကန့် စောင့်ဆိုင်းနေသည်။")
+            await asyncio.sleep(e.seconds + 2)
+        except Exception as e:
+            print(f"❌ Power Ranger Talk Loop Error: {e}")
+            await asyncio.sleep(3.0)
 
 # ==========================================
 # 🤖 OFFICIAL BOT COMMAND HANDLERS
 # ==========================================
-@bot.on(events.NewMessage(chats=SPECIFIC_GROUP))
+@bot.on(events.NewMessage(chats=[SPECIFIC_GROUP, MATRIX_GROUP_ID])) # 👈 [UPDATED] Matrix Group မှ command များကိုပါ လက်ခံရန်
 async def handle_bot_commands(event):
     global is_active, userbot, is_scraping, is_talker_active, is_catch_stopped
+    global is_powerranger_talking, powerranger_speed, powerranger_clients
     
     if event.sender_id != OWNER_ID:
         return
@@ -251,7 +305,7 @@ async def handle_bot_commands(event):
             await event.reply("❌ **String Session မတွေ့ရှိပါ။**")
             return
             
-        # 🔄 tomboy_col အစား marcuz_col ထဲသို့ ပြောင်းလဲ သိမ်းဆည်းမည်
+        # tomboy_col အစား marcuz_col ထဲသို့ ပြောင်းလဲ သိမ်းဆည်းမည်
         await marcuz_col.update_one(
             {"key": "string_session"},
             {"$set": {"value": session_str}},
@@ -275,21 +329,80 @@ async def handle_bot_commands(event):
         except Exception as e:
             await event.reply(f"❌ Userbot အလုပ်မလုပ်ပါ: {e}")
 
-    # 🛑 [NEW] /catch စနစ်အား ကိုယ်တိုင်ပိတ်မည့် Command
+    # 🛑 /catch စနစ်အား ကိုယ်တိုင်ပိတ်မည့် Command
     elif cmd == "/stop":
         is_catch_stopped = True
         await event.reply("🛑 **Chief! `/catch` လုပ်ငန်းစဉ်ကို ရပ်ဆိုင်းလိုက်ပါပြီ။**\n(Detector နှင့် Forward စနစ်များတော့ ပုံမှန်အတိုင်း အလုပ်လုပ်ပေးနေပါမည်)")
 
-    # ✅ [NEW] /catch စနစ်အား ပြန်လည်စတင်မည့် Command
+    # ✅ /catch စနစ်အား ပြန်လည်စတင်မည့် Command
     elif cmd == "/start":
         is_catch_stopped = False
         await event.reply("✅ **Chief! `/catch` လုပ်ငန်းစဉ်ကို ပြန်လည်စတင်လိုက်ပါပြီ။**")
+
+    # ==========================================
+    # ⚙️ [NEW] POWER RANGER COMMAND HANDLERS
+    # ==========================================
+    
+    # ➕ Power Ranger Userbot အသစ်များကို အကန့်အသတ်မရှိ ထည့်သွင်းရန် command
+    elif cmd.startswith("/addpr") or cmd.startswith("/pr"):
+        args = cmd.split(maxsplit=1)
+        session_str = None
+        
+        if len(args) > 1:
+            session_str = args[1].strip()
+        elif event.is_reply:
+            reply_msg = await event.get_reply_message()
+            if reply_msg and reply_msg.text:
+                session_str = reply_msg.text.strip()
+                
+        if not session_str:
+            await event.reply("❌ **Power Ranger အတွက် String Session မတွေ့ရှိပါ။**\nအသုံးပြုပုံစံ - `/addpr [session]` သို့မဟုတ် String Session စာသားကို Reply ထောက်၍ ပို့ပါ။")
+            return
+            
+        # DB ထဲတွင် Duplicate ဖြစ်ခြင်းမှ ကာကွယ်ရန် စစ်ဆေးပြီး သိမ်းဆည်းခြင်း
+        exists = await powerranger_col.find_one({"session": session_str})
+        if not exists:
+            await powerranger_col.insert_one({"session": session_str})
+            
+        await event.reply("⚙️ String Session ကို `powerranger_col` ထဲသို့ ဖြည့်သွင်းပြီးပါပြီ။ Client အား ချိတ်ဆက်နေသည်...")
+        
+        try:
+            pr_client = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
+            await pr_client.start()
+            
+            # Global List ထဲသို့ ထည့်ပြီး Loop စတင်ခြင်း
+            powerranger_clients.append(pr_client)
+            asyncio.create_task(start_powerranger_talk_loop(pr_client))
+            
+            await event.reply(f"🚀 Power Ranger Bot #{len(powerranger_clients)} အောင်မြင်စွာ စတင်လိုက်ပါပြီ။ Matrix အဖွဲ့ဝင်အသစ် တိုးလာပါပြီ။")
+        except Exception as e:
+            await event.reply(f"❌ Power Ranger Bot ချိတ်ဆက်မှု ပျက်ကွက်ပါသည်- {e}")
+
+    # 🗣️ Matrix Group တွင် စကားပြောခြင်း စတင်ရန် Command
+    elif cmd == "/talkon":
+        is_powerranger_talking = True
+        await event.reply("🗣️ **Power Rangers များ Matrix Group တွင် Random စကားပြောခြင်း လုပ်ငန်းစဉ် စတင်ပါပြီ။**")
+
+    # 🤐 စကားပြောခြင်း ရပ်တန့်ရန် Command
+    elif cmd == "/talkoff":
+        is_powerranger_talking = False
+        await event.reply("🤐 **Power Rangers များ စကားပြောခြင်းကို ခေတ္တရပ်ဆိုင်းလိုက်ပါပြီ။**")
+
+    # ⚡ အမြန်နှုန်း အရှိန်ချိန်ညှိရန် Command
+    elif cmd.startswith("/spd"):
+        args = cmd.split()
+        if len(args) > 1 and args[1] in ["1", "2", "3"]:
+            powerranger_speed = int(args[1])
+            speed_labels = {1: "နှေး (Slow ~6s)", 2: "အလယ်အလတ် (Medium ~3s)", 3: "အလွန်မြန် (Fast ~1s)"}
+            await event.reply(f"⚡ **Power Ranger စကားပြောနှုန်း အရှိန်ကို အဆင့် {powerranger_speed} ({speed_labels[powerranger_speed]}) သို့ ပြောင်းလဲသတ်မှတ်လိုက်ပါပြီ။**")
+        else:
+            await event.reply("❌ **အသုံးပြုပုံစံ မှားယွင်းနေပါသည်။**\n`/spd 1` (နှေး), `/spd 2` (ပုံမှန်) သို့မဟုတ် `/spd 3` (မြန်) ဟု ရွေးချယ်ပေးပါ။")
  
 # ==========================================
 # 🚀 SYSTEM STARTUP LOGIC
 # ==========================================
 async def startup():
-    global is_active, userbot
+    global is_active, userbot, powerranger_clients
     print("⏳ System starting up and loading configurations from MongoDB...")
     
     asyncio.create_task(start_dummy_web_server())
@@ -306,7 +419,7 @@ async def startup():
         is_active = True
         print("➡️ Auto-Reply Status: ACTIVE")
 
-    # 🔄 Startup မှာလည်း marcuz_col ထဲက string_session ကို ဆွဲထုတ်ပြီး အလုပ်လုပ်ခိုင်းခြင်း
+    # Startup မှာလည်း marcuz_col ထဲက string_session ကို ဆွဲထုတ်ပြီး အလုပ်လုပ်ခိုင်းခြင်း
     session_doc = await marcuz_col.find_one({"key": "string_session"})
     if session_doc:
         try:
@@ -314,7 +427,6 @@ async def startup():
             userbot = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
             await userbot.start()
             await userbot.get_dialogs()
-
             
             userbot.add_event_handler(spawn_detector_handler, events.NewMessage())
             userbot.add_event_handler(hint_solver_handler, events.NewMessage())
@@ -326,10 +438,26 @@ async def startup():
     else:
         print("💡 No String Session found in marcuz_col yet.")
 
+    # 🔄 [NEW] Startup တက်လာချိန်တွင် powerranger_col ထဲရှိ အကောင့်အားလုံးကို ဆွဲထုတ်ပြီး Auto Connect လုပ်ခြင်း
+    print("⏳ Loading Power Ranger accounts from database...")
+    async for pr_doc in powerranger_col.find():
+        pr_session = pr_doc.get("session")
+        if pr_session:
+            try:
+                pr_client = TelegramClient(StringSession(pr_session), APP_ID, APP_HASH)
+                await pr_client.start()
+                powerranger_clients.append(pr_client)
+                
+                # အကောင့်တစ်ခုချင်းစီအတွက် Background Loop Task တစ်ခါတည်း run ပေးခြင်း
+                asyncio.create_task(start_powerranger_talk_loop(pr_client))
+            except Exception as pr_err:
+                print(f"⚠️ Failed to connect a Power Ranger account from DB: {pr_err}")
+                
+    print(f"🚀 Loaded {len(powerranger_clients)} Power Ranger Bot(s) completely!")
+
     await bot.start(bot_token=BOT_TOKEN)
     print("🤖 Official Bot is running...")
     await bot.run_until_disconnected()
 
 if __name__ == '__main__':
     asyncio.run(startup())
-
