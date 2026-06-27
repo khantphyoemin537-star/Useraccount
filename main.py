@@ -23,7 +23,7 @@ COOLDOWN_TIME = 15
 
 # 🎯 NEW CHAT & BOT CONFIGURATIONS
 SPAWN_BOT_ID = 6157455819
-HINT_BOT_ID = 8552029570
+HINT_BOT_ID = 8506436817
 WAIFU_CHAT_ID = -1003999318284
 
 # Global States
@@ -153,11 +153,11 @@ async def spawn_detector_handler(event):
         if "ᴀ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ ɪɴ ᴛʜᴇ ᴄʜᴀᴛ!" in event.text:
             
             # 🚫 Ban ခံရခြင်းမှ ကာကွယ်ရန် သတ်မှတ်ထားသော Group ID များဖြစ်ပါက လုံးဝ ငြိမ်နေစေရန်
-            if event.chat_id in [-1001947407821, -1003067509601]:
+            if event.chat_id in [-1001947407820, -1003067509608]:
                 return  
 
             # 1. ⚡ 🔵 🟣 🟠 ပါဝင်လာပါက မည်သည့်အလုပ်မှ မလုပ်ဘဲ လုံးဝ ငြိမ်နေစေရန်
-            if any(emoji in event.text for emoji in ["🔵", "🟣", "🟠","🟡"]):
+            if any(emoji in event.text for emoji in ["🔵", "🟣"]):
                 return  
 
             # 2. ⚡ ကျန်တဲ့ အီမိုဂျီအမျိုးအစားအားလုံးအတွက် အလုပ်လုပ်မည့်အပိုင်း
@@ -200,7 +200,7 @@ async def hint_solver_handler(event):
                 target_group = spawn_tracker[event.reply_to_msg_id]
                 
             if target_group:
-                if target_group in [-1001947407821, -1003067509601]:
+                if target_group in [-1001947407820, -1003067509608]:
                     return
                 try:
                     delay_time = random.uniform(0.5, 0.7) 
