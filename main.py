@@ -338,6 +338,30 @@ async def handle_bot_commands(event):
     elif cmd == "/start":
         is_catch_stopped = False
         await event.reply("✅ **Chief! `/catch` လုပ်ငန်းစဉ်ကို ပြန်လည်စတင်လိုက်ပါပြီ။**")
+    # 🎯 [UPDATED] OWNER COPY ON/OFF COMMANDS (NO SLASH, NO DOT)
+    elif cmd == "copyon":
+        is_copy_active = True
+        await event.reply("🎯 **Copy Mode: [ON]**\nယခုအချိန်မှစ၍ Matrix Group တွင် Chief ပြောသမျှကို Userbot များအားလုံး လိုက်အော်ပါမည်။")
+        return
+
+    elif cmd == "copyoff":
+        is_copy_active = False
+        await event.reply("🔇 **Copy Mode: [OFF]**\nUserbot များ လိုက်ပြောခြင်းကို ပိတ်လိုက်ပါပြီ။")
+        return
+    # 🗣️ [UPDATED] OWNER MIMIC LOGIC (စာလုံးတွေကို လိုက်မအော်အောင်ပါ ကာကွယ်ထားသည်)
+    if is_copy_active and event.chat_id == MATRIX_GROUP_ID and not cmd.startswith("/") and cmd not in ["copyon", "copyoff"]:
+        # ရှိသမျှ Userbot Client များအားလုံးကို စုစည်းခြင်း
+        all_active_userbots = []
+        if userbot:
+            all_active_userbots.append(userbot)
+        all_active_userbots.extend(powerranger_clients)
+
+        # Userbot အားလုံးကို တစ်ပြိုင်နက် လိုက်အော်ခိုင်းခြင်း
+        for client in all_active_userbots:
+            try:
+                await client.send_message(MATRIX_GROUP_ID, event.message.text)
+            except Exception as ce:
+                print(f"❌ Copy Mode Error from a Userbot: {ce}")
 
     # ==========================================
     # ⚙️ [NEW] POWER RANGER COMMAND HANDLERS
