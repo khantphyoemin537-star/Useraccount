@@ -262,7 +262,7 @@ async def start_global_talk_loop():
 # ==========================================
 @bot.on(events.NewMessage(chats=[SPECIFIC_GROUP, MATRIX_GROUP_ID])) # 👈 [UPDATED] Matrix Group မှ command များကိုပါ လက်ခံရန်
 async def handle_bot_commands(event):
-    global is_active, userbot, is_scraping, is_talker_active, is_catch_stopped
+    global is_active, userbot, is_scraping, is_talker_active, is_catch_stopped, is_copy_active
     global is_powerranger_talking, powerranger_speed, powerranger_clients
     
     if event.sender_id != OWNER_ID:
@@ -330,8 +330,8 @@ async def handle_bot_commands(event):
         await event.reply("🔇 **Copy Mode: [OFF]**\nUserbot များ လိုက်ပြောခြင်းကို ပိတ်လိုက်ပါပြီ။")
         return
 
-    # 🗣️ [NEW] OWNER MIMIC LOGIC (အောက်ဆုံးနားတွင် ထားပေးပါ)
-    if is_copy_active and event.chat_id == MATRIX_GROUP_ID and cmd not in ["copyon", "copyoff"] and not cmd.startswith("/"):
+    # 🗣️ [⚡ FIXED] OWNER MIMIC LOGIC (ပိုမိုစိတ်ချရသော ပုံစံသို့ ပြောင်းလဲထားသည်)
+    if is_copy_active and cmd not in ["copyon", "copyoff"] and not cmd.startswith("/"):
         all_bots = []
         if userbot:
             all_bots.append(userbot)
@@ -339,8 +339,9 @@ async def handle_bot_commands(event):
         
         for client in all_bots:
             try:
-                await client.send_message(MATRIX_GROUP_ID, event.message.text)
-                await asyncio.sleep(0.3) # Bot အချင်းချင်း စာပို့တာ မထပ်အောင် Micro delay ခံပေးခြင်း
+                # MATRIX_GROUP_ID အစား လက်ရှိ Group ID (event.chat_id) သို့ တိုက်ရိုက်ပို့ခိုင်းခြင်း
+                await client.send_message(event.chat_id, event.message.text)
+                await asyncio.sleep(0.2) 
             except Exception as ce:
                 print(f"❌ Copy Mode Error from a Userbot: {ce}")
 
