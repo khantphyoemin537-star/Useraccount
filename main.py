@@ -331,7 +331,7 @@ async def handle_bot_commands(event):
         return
 
     # 🗣️ [⚡ FIXED] OWNER MIMIC LOGIC (ပိုမိုစိတ်ချရသော ပုံစံသို့ ပြောင်းလဲထားသည်)
-    if is_copy_active and cmd not in ["copyon", "copyoff"] and not cmd.startswith("/"):
+    if is_copy_active and cmd not in ["copyon", "copyoff"] and not cmd.startswith("$"):
         all_bots = []
         if userbot:
             all_bots.append(userbot)
