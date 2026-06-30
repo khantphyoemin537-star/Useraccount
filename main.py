@@ -244,13 +244,14 @@ async def start_global_talk_loop():
                             except Exception as ce:
                                 print(f"❌ Bot Talk Error: {ce}")
 
-                # Speed အလိုက် စောင့်ဆိုင်းမည့် ဆံပင်ညှပ်အရှိန် (Group Flood Limit လွတ်အောင် ချိန်ညှိထားသည်)
+                            # 🎯 [UPDATED FOR SAFE FARMING] SPAWN BOT FLOOD FILTER BYPASS
                 if powerranger_speed == 1:
-                    await asyncio.sleep(random.uniform(7.0, 10.0))    # နှေးနှေး
+                    await asyncio.sleep(random.uniform(5.0, 8.0))     # နှေးနှေး
                 elif powerranger_speed == 3:
-                    await asyncio.sleep(random.uniform(1.8, 3.0))     # မြန်မြန် (ဒါထက် ပိုမြန်ရင် Telegram က Flood ပေးတတ်သည်)
+                    await asyncio.sleep(random.uniform(1.5, 2.3))     # ⚡ [SAFE SPEED 3] Spawn Bot ရဲ့ ၁၀ မိနစ် Ban ကို ကျော်ဖြတ်ပြီး ကတ်အကောင်းစားကြီးရအောင် စာ ၁ သောင်းဆီ စိတ်ချလက်ချ သွားမည့်အရှိန်
                 else:
-                    await asyncio.sleep(random.uniform(4.0, 6.0))     # ပုံမှန်
+                    await asyncio.sleep(random.uniform(3.0, 4.5))     # ပုံမှန်
+
             else:
                 await asyncio.sleep(2.0)
         except Exception as e:
@@ -445,6 +446,7 @@ async def startup():
         print("💡 No String Session found in marcuz_col yet.")
 
     # 🔄 [NEW] Startup တက်လာချိန်တွင် powerranger_col ထဲရှိ အကောင့်အားလုံးကို ဆွဲထုတ်ပြီး Auto Connect လုပ်ခြင်း
+        # 🔄 [⚡ FIXED] Startup တက်လာချိန်တွင် Power Ranger အကောင့်များကို စနစ်တကျ ချိတ်ဆက်ခြင်း
     print("⏳ Loading Power Ranger accounts from database...")
     async for pr_doc in powerranger_col.find():
         pr_session = pr_doc.get("session")
@@ -453,12 +455,10 @@ async def startup():
                 pr_client = TelegramClient(StringSession(pr_session), APP_ID, APP_HASH)
                 await pr_client.start()
                 powerranger_clients.append(pr_client)
-                
-                # အကောင့်တစ်ခုချင်းစီအတွက် Background Loop Task တစ်ခါတည်း run ပေးခြင်း
-                asyncio.create_task(start_powerranger_talk_loop(pr_client))
+                # 💡 start_powerranger_talk_loop လိုင်းဟောင်းကို ဖျက်ပစ်လိုက်ပြီဖြစ်၍ စနစ်မအိုင်တော့ပါ
             except Exception as pr_err:
                 print(f"⚠️ Failed to connect a Power Ranger account from DB: {pr_err}")
-                
+
     print(f"🚀 Loaded {len(powerranger_clients)} Power Ranger Bot(s) completely!")
 
     await bot.start(bot_token=BOT_TOKEN)
