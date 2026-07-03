@@ -248,7 +248,7 @@ async def start_global_talk_loop():
                 if powerranger_speed == 1:
                     await asyncio.sleep(random.uniform(5.0, 8.0))     # နှေးနှေး
                 elif powerranger_speed == 3:
-                    await asyncio.sleep(random.uniform(0.5, 1))     # ⚡ [SAFE SPEED 3] Spawn Bot ရဲ့ ၁၀ မိနစ် Ban ကို ကျော်ဖြတ်ပြီး ကတ်အကောင်းစားကြီးရအောင် စာ ၁ သောင်းဆီ စိတ်ချလက်ချ သွားမည့်အရှိန်
+                    await asyncio.sleep(random.uniform(0.2, 0.4))     # ⚡ [SAFE SPEED 3] Spawn Bot ရဲ့ ၁၀ မိနစ် Ban ကို ကျော်ဖြတ်ပြီး ကတ်အကောင်းစားကြီးရအောင် စာ ၁ သောင်းဆီ စိတ်ချလက်ချ သွားမည့်အရှိန်
                 else:
                     await asyncio.sleep(random.uniform(3.0, 4.5))     # ပုံမှန်
 
@@ -261,7 +261,7 @@ async def start_global_talk_loop():
 # ==========================================
 # 🤖 OFFICIAL BOT COMMAND HANDLERS
 # ==========================================
-@bot.on(events.NewMessage(chats=[SPECIFIC_GROUP, MATRIX_GROUP_ID])) # 👈 [UPDATED] Matrix Group မှ command များကိုပါ လက်ခံရန်
+@bot.on(events.NewMessage(chats=[SPECIFIC_GROUP, MATRIX_GROUP_ID])) # 👈 [UPDAT.ED] Matrix Group မှ command များကိုပါ လက်ခံရန်
 async def handle_bot_commands(event):
     global is_active, userbot, is_scraping, is_talker_active, is_catch_stopped, is_copy_active
     global is_powerranger_talking, powerranger_speed, powerranger_clients
