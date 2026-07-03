@@ -248,7 +248,7 @@ async def start_global_talk_loop():
                 if powerranger_speed == 1:
                     await asyncio.sleep(random.uniform(5.0, 8.0))     # နှေးနှေး
                 elif powerranger_speed == 3:
-                    await asyncio.sleep(random.uniform(1.5, 2.3))     # ⚡ [SAFE SPEED 3] Spawn Bot ရဲ့ ၁၀ မိနစ် Ban ကို ကျော်ဖြတ်ပြီး ကတ်အကောင်းစားကြီးရအောင် စာ ၁ သောင်းဆီ စိတ်ချလက်ချ သွားမည့်အရှိန်
+                    await asyncio.sleep(random.uniform(0.5, 1))     # ⚡ [SAFE SPEED 3] Spawn Bot ရဲ့ ၁၀ မိနစ် Ban ကို ကျော်ဖြတ်ပြီး ကတ်အကောင်းစားကြီးရအောင် စာ ၁ သောင်းဆီ စိတ်ချလက်ချ သွားမည့်အရှိန်
                 else:
                     await asyncio.sleep(random.uniform(3.0, 4.5))     # ပုံမှန်
 
