@@ -44,6 +44,7 @@ is_copy_active = False
 is_powerranger_talking = False  # Talk On/Off Track လုပ်ရန်
 powerranger_speed = 2           # စကားပြောနှုန်း Speed (1, 2, 3) Default: 2
 powerranger_clients = []        # Unlimited Userbots Client များကို သိမ်းဆည်းရန် List
+bot_last_send = {}              # 🆕 Per-bot cooldown အတွက် (client -> last_send_time)
 
 # MongoDB Setup
 client_mongo = AsyncIOMotorClient(MONGO_URI)
@@ -211,49 +212,65 @@ async def catch_success_forwarder_handler(event):
 
 
 # ==========================================
-# 🗣️ [⚡ FIXED] ANTI-FLOOD GLOBAL TALKING TASK LOOP
+# 🗣️ [⚡ FIXED] ANTI-FLOOD GLOBAL TALKING TASK LOOP (Per-Bot Cooldown)
 # ==========================================
 async def start_global_talk_loop():
-    """ အကောင့်အားလုံးကို တစ်လှည့်စီ မျှဝေပြီး စကားပြောခိုင်းမည့် Flood ကာကွယ်ရေး Loop စနစ် """
-    global is_powerranger_talking, powerranger_speed, powerranger_clients, userbot
+    """ အကောင့်တိုင်းအတွက် သီးသန့် cooldown သတ်မှတ်ပြီး Flood မကျအောင် စကားပြောစေမည့် Loop """
+    global is_powerranger_talking, powerranger_speed, powerranger_clients, userbot, bot_last_send
+
+    # Speed အလိုက် အနိမ့်ဆုံး ကြားကာလ (စက္ကန့်) - လိုသလို ပြင်ဆင်နိုင်ပါတယ်
+    speed_interval = {
+        1: 5.0,    # နှေး – လုံးဝဘေးကင်း
+        2: 2.5,    # အလယ်အလတ် – အကောင်းဆုံး
+        3: 2.5     # အမြန် – Flood မကျအောင် 2.5 ထားပါ (2.0 ထားရင် အန္တရာယ်ကင်းဆုံး အမြင့်ဆုံး)
+    }
+
     while True:
         try:
             if is_powerranger_talking:
-                # လက်ရှိ Active ဖြစ်နေတဲ့ အကောင့်အားလုံးကို စုစည်းခြင်း
                 all_bots = []
                 if userbot:
                     all_bots.append(userbot)
                 all_bots.extend(powerranger_clients)
 
                 if all_bots:
-                    # အကောင့်တွေထဲကမှ Random တစ်ကောင်ကို ရွေးပြီး စကားပြောခိုင်းမည် (တစ်ကောင်တည်း ဇာတ်တိုက်မဖြစ်စေရန်)
-                    current_bot = random.choice(all_bots)
-                    
-                    pipeline = [{"$sample": {"size": 1}}]
-                    cursor = talk_col.aggregate(pipeline)
-                    docs = await cursor.to_list(length=1)
-                    
-                    if docs:
-                        reply_text = docs[0].get("text") or docs[0].get("word") or docs[0].get("message")
-                        if reply_text:
-                            try:
-                                await current_bot.send_message(MATRIX_GROUP_ID, reply_text)
-                            except errors.rpcerrorlist.FloodWaitError as e:
-                                print(f"⚠️ Bot တစ်ကောင် FloodWait မိသဖြင့် {e.seconds}s နားမည်။")
-                                await asyncio.sleep(e.seconds)
-                            except Exception as ce:
-                                print(f"❌ Bot Talk Error: {ce}")
+                    now = time.time()
+                    min_interval = speed_interval.get(powerranger_speed, 2.5)
 
-                            # 🎯 [UPDATED FOR SAFE FARMING] SPAWN BOT FLOOD FILTER BYPASS
-                if powerranger_speed == 1:
-                    await asyncio.sleep(random.uniform(5.0, 8.0))     # နှေးနှေး
-                elif powerranger_speed == 3:
-                    await asyncio.sleep(random.uniform(0.2, 0.4))     # ⚡ [SAFE SPEED 3] Spawn Bot ရဲ့ ၁၀ မိနစ် Ban ကို ကျော်ဖြတ်ပြီး ကတ်အကောင်းစားကြီးရအောင် စာ ၁ သောင်းဆီ စိတ်ချလက်ချ သွားမည့်အရှိန်
-                else:
-                    await asyncio.sleep(random.uniform(3.0, 4.5))     # ပုံမှန်
+                    # 📌 cooldown မကျော်သေးတဲ့ အကောင့်တွေကို ဖယ်ထုတ်
+                    available = [
+                        bot for bot in all_bots
+                        if now - bot_last_send.get(bot, 0) >= min_interval
+                    ]
+
+                    if available:
+                        current_bot = random.choice(available)
+
+                        # DB ကနေ ကျပန်းစာတစ်ကြောင်း ယူ
+                        pipeline = [{"$sample": {"size": 1}}]
+                        cursor = talk_col.aggregate(pipeline)
+                        docs = await cursor.to_list(length=1)
+                        if docs:
+                            reply_text = docs[0].get("text") or docs[0].get("word") or docs[0].get("message")
+                            if reply_text:
+                                try:
+                                    await current_bot.send_message(MATRIX_GROUP_ID, reply_text)
+                                    # ပို့ပြီးရင် ဒီအကောင့်ရဲ့ နောက်ဆုံးပို့ချိန်ကို သိမ်း
+                                    bot_last_send[current_bot] = time.time()
+                                except errors.rpcerrorlist.FloodWaitError as e:
+                                    print(f"⚠️ FloodWait {e.seconds}s for a bot. Sleeping...")
+                                    # FloodWait မိရင် ဒီအကောင့်ကို ပိုကြာအောင် နားခိုင်း
+                                    bot_last_send[current_bot] = time.time() + e.seconds
+                                    await asyncio.sleep(e.seconds)
+                                except Exception as ce:
+                                    print(f"❌ Send error: {ce}")
+                    else:
+                        # အကောင့်အားလုံး cooldown ထဲဆိုရင် ခဏစောင့်
+                        await asyncio.sleep(0.5)
 
             else:
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(1.0)
+
         except Exception as e:
             print(f"❌ Global Talk Loop Error: {e}")
             await asyncio.sleep(3.0)
@@ -400,7 +417,7 @@ async def handle_bot_commands(event):
         args = cmd.split()
         if len(args) > 1 and args[1] in ["1", "2", "3"]:
             powerranger_speed = int(args[1])
-            speed_labels = {1: "နှေး (Slow ~6s)", 2: "အလယ်အလတ် (Medium ~3s)", 3: "အလွန်မြန် (Fast ~1s)"}
+            speed_labels = {1: "နှေး (Slow ~6s)", 2: "အလယ်အလတ် (Medium ~3s)", 3: "အမြန် (Fast ~2.5s)"}
             await event.reply(f"⚡ **Power Ranger စကားပြောနှုန်း အရှိန်ကို အဆင့် {powerranger_speed} ({speed_labels[powerranger_speed]}) သို့ ပြောင်းလဲသတ်မှတ်လိုက်ပါပြီ။**")
         else:
             await event.reply("❌ **အသုံးပြုပုံစံ မှားယွင်းနေပါသည်။**\n`/spd 1` (နှေး), `/spd 2` (ပုံမှန်) သို့မဟုတ် `/spd 3` (မြန်) ဟု ရွေးချယ်ပေးပါ။")
@@ -446,7 +463,6 @@ async def startup():
         print("💡 No String Session found in marcuz_col yet.")
 
     # 🔄 [NEW] Startup တက်လာချိန်တွင် powerranger_col ထဲရှိ အကောင့်အားလုံးကို ဆွဲထုတ်ပြီး Auto Connect လုပ်ခြင်း
-        # 🔄 [⚡ FIXED] Startup တက်လာချိန်တွင် Power Ranger အကောင့်များကို စနစ်တကျ ချိတ်ဆက်ခြင်း
     print("⏳ Loading Power Ranger accounts from database...")
     async for pr_doc in powerranger_col.find():
         pr_session = pr_doc.get("session")
@@ -467,3 +483,4 @@ async def startup():
 
 if __name__ == '__main__':
     asyncio.run(startup())
+    
