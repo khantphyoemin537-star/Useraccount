@@ -299,7 +299,7 @@ async def start_global_talk_loop():
     speed_interval = {
         1: 5.0,    # နှေး – လုံးဝဘေးကင်း
         2: 2.5,    # အလယ်အလတ် – အကောင်းဆုံး
-        3: 0.2     # အမြန် – Flood မကျအောင် 2.5 ထားပါ (2.0 ထားရင် အန္တရာယ်ကင်းဆုံး အမြင့်ဆုံး)
+        3: 0.1     # အမြန် – Flood မကျအောင် 2.5 ထားပါ (2.0 ထားရင် အန္တရာယ်ကင်းဆုံး အမြင့်ဆုံး)
     }
 
     while True:
@@ -350,13 +350,13 @@ async def start_global_talk_loop():
                         # ပစ်ပို့မိကာ Telegram ဘက်က Flood လို့ သတ်မှတ်ခံရတာပါ (ဒုတိယ bug)
                         # 🎯 ~50 msg/min ရအောင် pacing ကို 0.7–1.1s အထိ လျှော့ချထားသည် (Bot 5ကောင်စာ)
                         # ⚠️ ဒီထက်ပိုမြန်အောင် ထပ်လျှော့ရင် Flood ပြန်ကျနိုင်ချေ သိသိသာသာ တိုးလာမည်
-                        await asyncio.sleep(random.uniform(0.7, 1.1))
+                        await asyncio.sleep(random.uniform(0.3, 0.5))
                     else:
                         # အကောင့်အားလုံး cooldown ထဲဆိုရင် ခဏစောင့်
                         await asyncio.sleep(0.3)
 
             else:
-                await asyncio.sleep(0.7)
+                await asyncio.sleep(0.5)
 
         except Exception as e:
             print(f"❌ Global Talk Loop Error: {e}")
