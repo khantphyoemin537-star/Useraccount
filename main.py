@@ -299,7 +299,7 @@ async def start_global_talk_loop():
     speed_interval = {
         1: 5.0,    # နှေး – လုံးဝဘေးကင်း
         2: 2.5,    # အလယ်အလတ် – အကောင်းဆုံး
-        3: 0.4     # အမြန် – Flood မကျအောင် 2.5 ထားပါ (2.0 ထားရင် အန္တရာယ်ကင်းဆုံး အမြင့်ဆုံး)
+        3: 0.2     # အမြန် – Flood မကျအောင် 2.5 ထားပါ (2.0 ထားရင် အန္တရာယ်ကင်းဆုံး အမြင့်ဆုံး)
     }
 
     while True:
@@ -353,10 +353,10 @@ async def start_global_talk_loop():
                         await asyncio.sleep(random.uniform(0.7, 1.1))
                     else:
                         # အကောင့်အားလုံး cooldown ထဲဆိုရင် ခဏစောင့်
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(0.3)
 
             else:
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(0.7)
 
         except Exception as e:
             print(f"❌ Global Talk Loop Error: {e}")
