@@ -312,7 +312,7 @@ async def start_global_talk_loop():
 
                 if all_bots:
                     now = time.time()
-                    min_interval = speed_interval.get(powerranger_speed, 2.5)
+                    min_interval = speed_interval.get(powerranger_speed, 1)
 
                     # 📌 cooldown မကျော်သေးတဲ့ အကောင့်တွေကို ဖယ်ထုတ်
                     available = [
@@ -350,7 +350,7 @@ async def start_global_talk_loop():
                         # ပစ်ပို့မိကာ Telegram ဘက်က Flood လို့ သတ်မှတ်ခံရတာပါ (ဒုတိယ bug)
                         # 🎯 ~50 msg/min ရအောင် pacing ကို 0.7–1.1s အထိ လျှော့ချထားသည် (Bot 5ကောင်စာ)
                         # ⚠️ ဒီထက်ပိုမြန်အောင် ထပ်လျှော့ရင် Flood ပြန်ကျနိုင်ချေ သိသိသာသာ တိုးလာမည်
-                        await asyncio.sleep(random.uniform(0.3, 0.5))
+                        await asyncio.sleep(random.uniform(0.1, 0.2))
                     else:
                         # အကောင့်အားလုံး cooldown ထဲဆိုရင် ခဏစောင့်
                         await asyncio.sleep(0.3)
