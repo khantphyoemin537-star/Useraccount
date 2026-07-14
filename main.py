@@ -18,7 +18,7 @@ APP_HASH = 'c8c0685d6dd5b9e546093ea90d27733b'
 BOT_TOKEN = '8738081667:AAHADgcDISntnOBwT3uj2yYw7n3XJUN2uZI'
 
 OWNER_ID = 6015356597
-ADMIN_ID = 0  # 👈 [FILL THIS IN] Captcha alert မှာ mention ခေါ်ရန် Admin ရဲ့ Telegram numeric user ID ကို ဒီနေရာမှာ ထည့်ပါ
+ADMIN_ID = 6015356597  # 👈 [FILL THIS IN] Captcha alert မှာ mention ခေါ်ရန် Admin ရဲ့ Telegram numeric user ID ကို ဒီနေရာမှာ ထည့်ပါ
 SPECIFIC_GROUP = -1003999318284
 MATRIX_GROUP_ID = -1003806830045  # 👈 [NEW] Matrix Group ID
 COOLDOWN_TIME = 15
