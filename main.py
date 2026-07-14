@@ -44,7 +44,7 @@ is_copy_active = False
 
 # 🚀 [NEW] Power Ranger Global States
 is_powerranger_talking = False  # Talk On/Off Track လုပ်ရန်
-powerranger_speed = 2           # စကားပြောနှုန်း Speed (1, 2, 3) Default: 2
+powerranger_speed = 3           # စကားပြောနှုန်း Speed (1, 2, 3) Default: 2
 powerranger_clients = []        # Unlimited Userbots Client များကို သိမ်းဆည်းရန် List
 bot_last_send = {}              # 🆕 Per-bot cooldown အတွက် (client -> last_send_time)
 
@@ -299,7 +299,7 @@ async def start_global_talk_loop():
     speed_interval = {
         1: 5.0,    # နှေး – လုံးဝဘေးကင်း
         2: 2.5,    # အလယ်အလတ် – အကောင်းဆုံး
-        3: 2.5     # အမြန် – Flood မကျအောင် 2.5 ထားပါ (2.0 ထားရင် အန္တရာယ်ကင်းဆုံး အမြင့်ဆုံး)
+        3: 0.8     # အမြန် – Flood မကျအောင် 2.5 ထားပါ (2.0 ထားရင် အန္တရာယ်ကင်းဆုံး အမြင့်ဆုံး)
     }
 
     while True:
