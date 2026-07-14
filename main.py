@@ -509,7 +509,91 @@ async def handle_bot_commands(event):
             await event.reply(f"⚡ **Power Ranger စကားပြောနှုန်း အရှိန်ကို အဆင့် {powerranger_speed} ({speed_labels[powerranger_speed]}) သို့ ပြောင်းလဲသတ်မှတ်လိုက်ပါပြီ။**")
         else:
             await event.reply("❌ **အသုံးပြုပုံစံ မှားယွင်းနေပါသည်။**\n`/spd 1` (နှေး), `/spd 2` (ပုံမှန်) သို့မဟုတ် `/spd 3` (မြန်) ဟု ရွေးချယ်ပေးပါ။")
- 
+
+   # 🔍 Spawn Bot ရှိသော Group များကိုသာ ရှာဖွေပေးမည်
+     elif cmd == "/findspawn":
+    await event.reply("🔍 **Spawn Bot ရှိသော Group များကို ရှာဖွေနေပါသည်...**\nMatrix Group သို့ ရလဒ်များ ပို့ပေးပါမည်။ (အနည်းငယ်စောင့်ပါ)")
+    
+    all_clients = []
+    if userbot:
+        all_clients.append(("👑 Main Userbot", userbot))
+    for idx, client in enumerate(powerranger_clients, 1):
+        all_clients.append((f"🤖 Power Ranger #{idx}", client))
+        
+    if not all_clients:
+        await event.reply("❌ ချိတ်ဆက်ထားသော Userbot မရှိပါ။")
+        return
+
+    results = ["🔍 **Spawn Bot ရှိသော Group များ**"]
+    results.append("═" * 35)
+    found_count = 0
+    
+    for label, client in all_clients:
+        try:
+            me = await client.get_me()
+            client_name = f"{me.first_name or ''} {me.last_name or ''}".strip() or "No Name"
+            results.append(f"\n📌 {label} (ID: `{me.id}`) - {client_name}")
+            
+            async for dialog in client.iter_dialogs():
+                entity = dialog.entity
+                if not (dialog.is_group or dialog.is_channel or dialog.is_megagroup):
+                    continue
+                
+                # Spawn Bot ရှိမရှိ စစ်ဆေးရန် မကြာသေးမီက message များကို ဆွဲယူ
+                try:
+                    async for msg in client.iter_messages(entity, limit=10):
+                        if msg.sender_id == SPAWN_BOT_ID:
+                            # Spawn Bot တွေ့ပြီ
+                            title = entity.title or "Unknown Group"
+                            chat_id = entity.id
+                            username = getattr(entity, 'username', None)
+                            
+                            # Invite Link ရအောင်ကြိုးစား
+                            link = None
+                            if username:
+                                link = f"https://t.me/{username}"
+                            else:
+                                try:
+                                    result = await client(functions.messages.ExportChatInviteRequest(
+                                        peer=entity,
+                                        usage=0
+                                    ))
+                                    if result and hasattr(result, 'link') and result.link:
+                                        link = result.link
+                                except Exception:
+                                    pass
+                            
+                            if not link:
+                                link = f"Private Group (ID: `{chat_id}`)"
+                            
+                            results.append(f"  ✅ {title}")
+                            results.append(f"     ├─ ID: `{chat_id}`")
+                            results.append(f"     └─ Link: {link}")
+                            found_count += 1
+                            break  # တွေ့ပြီဆိုရင် ဒီ group အတွက် ရပ်လိုက်
+                except Exception:
+                    continue  # ဒီ group အတွက် messages ဆွဲမရရင် ကျော်သွား
+        except Exception as e:
+            results.append(f"❌ {label}: {str(e)[:100]}")
+    
+    if found_count == 0:
+        final_text = "❌ **Spawn Bot ရှိသော Group တစ်ခုမှ မတွေ့ရှိပါ။**"
+    else:
+        results.append(f"\n✅ စုစုပေါင်း {found_count} ခု တွေ့ရှိပါသည်။")
+        final_text = "\n".join(results)
+    
+    # Matrix Group ထဲကို ပို့မယ်
+    try:
+        if len(final_text) > 4000:
+            from io import BytesIO
+            file = BytesIO(final_text.encode('utf-8'))
+            file.name = "spawn_groups.txt"
+            await bot.send_file(MATRIX_GROUP_ID, file, caption="🔍 **Spawn Bot ရှိသော Group များ**")
+        else:
+            await bot.send_message(MATRIX_GROUP_ID, final_text)
+        await event.reply("✅ **Spawn Group များကို Matrix Group သို့ အောင်မြင်စွာ ပို့ပြီးပါပြီ။**")
+    except Exception as e:
+        await event.reply(f"❌ ပို့ရာတွင် အမှားရှိသွားသည်: {e}")
 # ==========================================
 # 🚀 SYSTEM STARTUP LOGIC
 # ==========================================
