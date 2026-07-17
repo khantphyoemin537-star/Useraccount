@@ -1,16 +1,16 @@
-import os  # 👈 Render ရဲ့ Port ကို ဖတ်ဖို့အတွက်
+import os
 import asyncio
 import random
 import time
 import logging
-import re  # 👈 Catch Command များကို Regex ဖြင့် တိကျစွာဆွဲထုတ်ရန်
-import unicodedata  # 👈 Font အမျိုးမျိုး (Bold/Italic/Small-Caps) ကို standard စာလုံးအဖြစ် ပြန်ပြောင်းရန်
+import re
+import unicodedata
 from telethon import TelegramClient, events, errors, functions
 from telethon.sessions import StringSession
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # ==========================================
-# ⚙️ CONFIGURATION (Credentials)
+# ⚙️ CONFIGURATION
 # ==========================================
 MONGO_URI = "mongodb+srv://khantphyoemin537_db_user:9VRKiaeZkz7rJdpz@cluster0.w6tgi8j.mongodb.net/telegram_bot?appName=Cluster0&tlsAllowInvalidCertificates=true"
 APP_ID = 39584681
@@ -18,12 +18,11 @@ APP_HASH = 'c8c0685d6dd5b9e546093ea90d27733b'
 BOT_TOKEN = '8738081667:AAHADgcDISntnOBwT3uj2yYw7n3XJUN2uZI'
 
 OWNER_ID = 6015356597
-ADMIN_ID = 6015356597  # 👈 Admin user ID (ထပ်တူထားနိုင်သည်)
+ADMIN_ID = 6015356597
 SPECIFIC_GROUP = -1003999318284
-MATRIX_GROUP_ID = -1003806830045  # 👈 Matrix Group ID
+MATRIX_GROUP_ID = -1003806830045
 COOLDOWN_TIME = 15
 
-# 🎯 NEW CHAT & BOT CONFIGURATIONS
 SPAWN_BOT_ID = 6157455819
 HINT_BOT_ID = 8506436817
 WAIFU_CHAT_ID = -1003999318284
@@ -31,40 +30,38 @@ WAIFU_CHAT_ID = -1003999318284
 # Global States
 is_active = False
 is_scraping = False
-is_adding_contacts = False  
+is_adding_contacts = False
 user_cooldowns = {}
-is_talker_active = False       
+is_talker_active = False
 message_count = 0
 spam_tasks = {}
-spawn_tracker = {}            
-last_spawn_chat_id = None     
-HINT_REGEX = re.compile(r"(/catch\s+[^\n]+)") 
-is_catch_stopped = False      
+spawn_tracker = {}
+last_spawn_chat_id = None
+HINT_REGEX = re.compile(r"(/catch\s+[^\n]+)")
+is_catch_stopped = False
 is_copy_active = False
-
-# 🚀 Power Ranger Global States
 is_powerranger_talking = False
-powerranger_speed = 2           # Default: 2 (အလယ်အလတ်)
-powerranger_clients = []        
-bot_last_send = {}              
+powerranger_speed = 2
+powerranger_clients = []
+bot_last_send = {}
 
 # MongoDB Setup
 client_mongo = AsyncIOMotorClient(MONGO_URI)
 db = client_mongo["telegram_bot"]
 reply_save_col = db["reply_save_col"]
-target_bots_col = db["target_bots"]  
-tomboy_col = db["tomboy_col"]  
-marcuz_col = db["marcuz_col"]        
-powerranger_col = db["powerranger_col"]  
-talk_col = db["random_talk"]   
+target_bots_col = db["target_bots"]
+tomboy_col = db["tomboy_col"]
+marcuz_col = db["marcuz_col"]
+powerranger_col = db["powerranger_col"]
+talk_col = db["random_talk"]
 filters_col = db["filters"]
 
-# Initialize Official Bot Client
+# Initialize Clients
 bot = TelegramClient('official_bot_session', APP_ID, APP_HASH)
-userbot = None  
+userbot = None
 
 # ==========================================
-# 🌍 DUMMY HTTP SERVER FOR RENDER HEALTH CHECK
+# 🌍 DUMMY HTTP SERVER
 # ==========================================
 async def handle_render_health_check(reader, writer):
     await reader.read(100)
@@ -84,7 +81,7 @@ async def start_dummy_web_server():
         print(f"❌ Failed to start Dummy Web Server: {e}")
 
 # ==========================================
-# 🗑️ ANTI-FLOOD DELAYED DELETION TASK
+# 🗑️ DELETION HELPERS
 # ==========================================
 async def delete_bot_message_delayed(event, bot_msg_id, cmd_msg_id=0):
     try:
@@ -92,10 +89,8 @@ async def delete_bot_message_delayed(event, bot_msg_id, cmd_msg_id=0):
         to_delete = [bot_msg_id]
         if cmd_msg_id:
             to_delete.append(cmd_msg_id)
-            
         await event.client.delete_messages(event.chat_id, to_delete)
         print(f"🗑️ Auto-deleted message {bot_msg_id} after delay.")
-        
     except errors.rpcerrorlist.FloodWaitError as e:
         print(f"⚠️ FloodWait Caught! Must wait {e.seconds} seconds.")
         await asyncio.sleep(e.seconds)
@@ -106,7 +101,6 @@ async def delete_bot_message_delayed(event, bot_msg_id, cmd_msg_id=0):
     except Exception as e:
         print(f"❌ Error during delayed deletion: {e}")
 
-# ⏱️ /catch command အား ၁ စက္ကန့်အကြာတွင် အလိုအလျောက် ပြန်ဖျက်ပေးမည့် သီးသန့် Task
 async def delete_catch_message_delayed(client, chat_id, msg_id):
     try:
         await asyncio.sleep(1)
@@ -116,105 +110,68 @@ async def delete_catch_message_delayed(client, chat_id, msg_id):
         print(f"❌ Failed to delete /catch message: {e}")
 
 # ==========================================
-# ⚔️ NEW ANIME SPAWN DETECTOR & CATCHER HANDLERS (ULTRA SPEED OPTIMIZED)
+# 🎯 SPAWN DETECTOR & CATCHER
 # ==========================================
 async def spawn_detector_handler(event):
     global last_spawn_chat_id, spawn_tracker
-    """ Spawn Bot က ပုံ/ဗီဒီယိုနှင့် စာပို့လာပါက ဖမ်းဆီး၍ Forward ပို့မည့်စနစ် """
     if event.sender_id == SPAWN_BOT_ID and event.text:
         if "ᴀ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ ɪɴ ᴛʜᴇ ᴄʜᴀᴛ!" in event.text:
-            
-            # 🚫 Ban ခံရခြင်းမှ ကာကွယ်ရန် သတ်မှတ်ထားသော Group ID များဖြစ်ပါက လုံးဝ ငြိမ်နေစေရန်
             if event.chat_id in [-1001947407820, -1003067509608]:
-                return  
-
-            # 1. ⚡ 🔵 🟣 🟠 ပါဝင်လာပါက မည်သည့်အလုပ်မှ မလုပ်ဘဲ လုံးဝ ငြိမ်နေစေရန်
+                return
             if any(emoji in event.text for emoji in ["🔵", "🟣"]):
-                return  
-
-            # 2. ⚡ ကျန်တဲ့ အီမိုဂျီအမျိုးအစားအားလုံးအတွက် အလုပ်လုပ်မည့်အပိုင်း
+                return
             orig_chat_id = event.chat_id
-            last_spawn_chat_id = orig_chat_id  
-            
+            last_spawn_chat_id = orig_chat_id
             try:
-                # Waifu Chat ထံ တိုက်ရိုက် Forward ပို့ခြင်း
                 fwd_msg = await event.message.forward_to(WAIFU_CHAT_ID)
-                
-                # Forward ပြီးတာနဲ့ /waifu လို့ ချက်ချင်း Reply ပြန်အော်မည်
                 reply_msg = await fwd_msg.reply("/waifu")
-                
-                # Hint Solver အတွက် ID များကို အမြန်မှတ်သားခြင်း
                 spawn_tracker[fwd_msg.id] = orig_chat_id
                 spawn_tracker[reply_msg.id] = orig_chat_id
-                
                 if len(spawn_tracker) > 100:
                     spawn_tracker.pop(next(iter(spawn_tracker)))
-                    
             except Exception:
                 pass
 
-
 async def hint_solver_handler(event):
     global last_spawn_chat_id, spawn_tracker, is_catch_stopped
-    """ Hint ပေးသော Bot ထံမှ /catch command ကို copy ယူပြီး မူရင်း Group ဆီသို့ အမြန်လှမ်းပို့မည့်စနစ် """
-    
-    # 🛑 OWNER က stop ထားပါက /catch သွားမပို့တော့ဘဲ Skip မည်
     if is_catch_stopped:
         return
-
     if event.chat_id == WAIFU_CHAT_ID and event.sender_id == HINT_BOT_ID and event.text:
         match = HINT_REGEX.search(event.text)
         if match:
             catch_command = match.group(1).strip(" `\n\r")
             target_group = last_spawn_chat_id
-            
             if event.reply_to_msg_id and event.reply_to_msg_id in spawn_tracker:
                 target_group = spawn_tracker[event.reply_to_msg_id]
-                
             if target_group:
                 if target_group in [-1001947407820, -1003067509608]:
                     return
                 try:
-                    delay_time = random.uniform(0.5, 0.7) 
-                    
+                    delay_time = random.uniform(0.5, 0.7)
                     async with event.client.action(target_group, 'typing'):
                         await asyncio.sleep(delay_time)
-                        
-                    # 🎯 /catch လှမ်းပို့ပြီး ပို့လိုက်သော message object ကို ဖမ်းယူခြင်း
                     sent_msg = await event.client.send_message(target_group, catch_command)
                     print(f"🎯 Caught character with delay {delay_time:.2f}s")
-                    
-                    # 🗑️ ပို့ပြီးတာနဲ့ ၁ စက္ကန့်အကြာမှာ ထို /catch မက်ဆေ့ချ်ကို ပြန်ဖျက်ခိုင်းခြင်း
                     asyncio.create_task(delete_catch_message_delayed(event.client, target_group, sent_msg.id))
-                    
                 except Exception as e:
                     print(f"❌ Catch Error: {e}")
 
-# 📦 မိမိကိုယ်တိုင် ဖမ်းမိတဲ့ ကတ် Report များကိုသာ Specific Group ထံ Forward ပေးမည့်စနစ်
 async def catch_success_forwarder_handler(event):
-    """ Spawn Bot က ကတ်မိသွားလို့ ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ! ဟု ပို့လာပြီး မိမိကို Mention ခေါ်ထားမှသာ Forward ပေးမည် """
     if event.sender_id == SPAWN_BOT_ID and event.text:
-        
-        # 🛠️ ပြင်ဆင်ချက် ၁ - မူလက "ေ" ပါနေသည်ကို အင်္ဂလိပ် Small Capital "ᴇ" (ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ!) သို့ အမှန်ပြင်ဆင်ထားသည်။
         if "ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ!" in event.text:
             try:
-                # မိမိအကောင့်ရဲ့ လက်ရှိ Profile Name ကို လှမ်းယူခြင်း
                 me = await event.client.get_me()
                 first_name = me.first_name or ""
                 last_name = me.last_name or ""
                 full_name = f"{first_name} {last_name}".strip()
-                
-                # 🛠️ ပြင်ဆင်ချက် ၂ - Tag မိတာအပြင်၊ မိမိရဲ့ Full Name (သို့) First Name စာသားပါနေရင်ပါ အလုပ်လုပ်စေရန် စစ်ဆေးခြင်း
                 if event.message.mentioned or (full_name and full_name in event.text) or (first_name and first_name in event.text):
                     await event.message.forward_to(SPECIFIC_GROUP)
                     print("📦 Forwarded YOUR OWN success catch card report to SPECIFIC_GROUP.")
-                    
             except Exception as e:
                 print(f"❌ Success Card Forward Error: {e}")
 
-
 # ==========================================
-# 🔤 STYLIZED-FONT NORMALIZER (Bold / Italic / Small-Caps / Fullwidth → Plain a-z)
+# 🔤 FONT NORMALIZER
 # ==========================================
 _SMALL_CAPS_MAP = str.maketrans({
     'ᴀ': 'a', 'ʙ': 'b', 'ᴄ': 'c', 'ᴅ': 'd', 'ᴇ': 'e', 'ꜰ': 'f', 'ɢ': 'g',
@@ -224,7 +181,6 @@ _SMALL_CAPS_MAP = str.maketrans({
 })
 
 def normalize_stylized_text(text: str) -> str:
-    """ Unicode Font အမျိုးမျိုးနဲ့ ရေးထားတဲ့ စာသားကို standard a-z lowercase အဖြစ် ပြန်ပြောင်း """
     if not text:
         return ""
     normalized = unicodedata.normalize('NFKD', text)
@@ -232,7 +188,7 @@ def normalize_stylized_text(text: str) -> str:
     normalized = normalized.translate(_SMALL_CAPS_MAP)
     return normalized.lower()
 
-_CAPTCHA_EMOJIS = ("💈", "💊", "🧬")  
+_CAPTCHA_EMOJIS = ("💈", "💊", "🧬")
 
 def looks_like_captcha_alert(raw_text: str) -> bool:
     if not raw_text:
@@ -241,10 +197,6 @@ def looks_like_captcha_alert(raw_text: str) -> bool:
         return True
     return "captcha" in normalize_stylized_text(raw_text)
 
-
-# ==========================================
-# 🚨 CAPTCHA ALERT HANDLER (Owner/Admin ကို mention ခေါ်ရုံသာ)
-# ==========================================
 async def captcha_alert_handler(event):
     if event.chat_id != MATRIX_GROUP_ID:
         return
@@ -262,18 +214,16 @@ async def captcha_alert_handler(event):
         except Exception as e:
             print(f"❌ Captcha Alert Error: {e}")
 
-
 # ==========================================
-# 🗣️ ANTI-FLOOD GLOBAL TALKING TASK LOOP (Per-Bot Cooldown + Pacing)
+# 🗣️ GLOBAL TALK LOOP
 # ==========================================
 async def start_global_talk_loop():
     global is_powerranger_talking, powerranger_speed, powerranger_clients, userbot, bot_last_send
 
-    # Speed အလိုက် အနိမ့်ဆုံး ကြားကာလ (စက္ကန့်) - ဘေးကင်းသော အတိုင်းအတာ
     speed_interval = {
-        1: 3.0,    # နှေး
-        2: 1.5,    # အလယ်အလတ်
-        3: 0.8     # မြန် (သို့သော် 0.8 ထက် မလျှော့ပါနှင့်)
+        1: 3.0,
+        2: 1.5,
+        3: 0.8
     }
 
     while True:
@@ -289,8 +239,8 @@ async def start_global_talk_loop():
                     min_interval = speed_interval.get(powerranger_speed, 1.0)
 
                     available = [
-                        bot for bot in all_bots
-                        if now - bot_last_send.get(bot, 0) >= min_interval
+                        b for b in all_bots
+                        if now - bot_last_send.get(b, 0) >= min_interval
                     ]
 
                     if available:
@@ -311,7 +261,6 @@ async def start_global_talk_loop():
                                 except Exception as ce:
                                     print(f"❌ Send error: {ce}")
 
-                        # Pacing – စာပို့ပြီးတိုင်း အနည်းငယ်စောင့်ဆိုင်းခြင်းဖြင့် burst မဖြစ်အောင် ကာကွယ်သည်
                         await asyncio.sleep(random.uniform(0.3, 0.5))
                     else:
                         await asyncio.sleep(0.3)
@@ -321,7 +270,6 @@ async def start_global_talk_loop():
         except Exception as e:
             print(f"❌ Global Talk Loop Error: {e}")
             await asyncio.sleep(3.0)
-
 
 # ==========================================
 # 🤖 OFFICIAL BOT COMMAND HANDLERS
@@ -336,7 +284,7 @@ async def handle_bot_commands(event):
 
     cmd = event.message.text.strip() if event.message.text else ""
 
-    # 🎯 /marcuz (String Session သိမ်းဆည်းရန်)
+    # 🎯 /marcuz
     if cmd.startswith("/marcuz") or cmd.startswith("/mc"):
         args = cmd.split(maxsplit=1)
         session_str = None
@@ -370,12 +318,12 @@ async def handle_bot_commands(event):
         except Exception as e:
             await event.reply(f"❌ Userbot အလုပ်မလုပ်ပါ: {e}")
 
-    # 🛑 /stop – catch စနစ်ပိတ်ရန်
+    # 🛑 /stop
     elif cmd == "/stop":
         is_catch_stopped = True
         await event.reply("🛑 **Chief! `/catch` လုပ်ငန်းစဉ်ကို ရပ်ဆိုင်းလိုက်ပါပြီ။**\n(Detector နှင့် Forward စနစ်များတော့ ပုံမှန်အတိုင်း အလုပ်လုပ်ပေးနေပါမည်)")
 
-    # ✅ /start – catch စနစ်ပြန်ဖွင့်ရန်
+    # ✅ /start
     elif cmd == "/start":
         is_catch_stopped = False
         await event.reply("✅ **Chief! `/catch` လုပ်ငန်းစဉ်ကို ပြန်လည်စတင်လိုက်ပါပြီ။**")
@@ -403,7 +351,7 @@ async def handle_bot_commands(event):
             except Exception as ce:
                 print(f"❌ Copy Mode Error from a Userbot: {ce}")
 
-    # ➕ Power Ranger အသစ်ထည့်ရန်
+    # ➕ /addpr
     elif cmd.startswith("/addpr") or cmd.startswith("/pr"):
         args = cmd.split(maxsplit=1)
         session_str = None
@@ -426,31 +374,29 @@ async def handle_bot_commands(event):
             pr_client = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
             await pr_client.start()
             powerranger_clients.append(pr_client)
-            # အကောင့်သစ်၏ cooldown ကို ကျပန်းနှောင့်နှေးပေးခြင်း
             bot_last_send[pr_client] = time.time() + random.uniform(0, 2.0)
             await event.reply(f"🚀 Power Ranger Bot #{len(powerranger_clients)} အောင်မြင်စွာ စတင်လိုက်ပါပြီ။ Matrix အဖွဲ့ဝင်အသစ် တိုးလာပါပြီ။")
         except Exception as e:
             await event.reply(f"❌ Power Ranger Bot ချိတ်ဆက်မှု ပျက်ကွက်ပါသည်- {e}")
 
-    # 🗣️ /talkon – စကားပြောစတင်ရန်
-    elif cmd == "/on":
+    # 🗣️ /talkon
+    elif cmd == "/talkon":
         is_powerranger_talking = True
-        # cooldown အားလုံးကို ပြန်သတ်မှတ်ပြီး ကျပန်းနှောင့်နှေးပေးခြင်း
         all_bots = []
         if userbot:
             all_bots.append(userbot)
         all_bots.extend(powerranger_clients)
         now = time.time()
-        for b in all_bots:
+        for b in all_bots:  # 👈 FIXED: bot → b
             bot_last_send[b] = now + random.uniform(0.1, 0.5)
         await event.reply("🗣️ **Power Rangers များ Matrix Group တွင် Random စကားပြောခြင်း လုပ်ငန်းစဉ် စတင်ပါပြီ။**")
 
-    # 🤐 /talkoff – စကားပြောရပ်ရန်
-    elif cmd == "/off":
+    # 🤐 /talkoff
+    elif cmd == "/talkoff":
         is_powerranger_talking = False
         await event.reply("🤐 **Power Rangers များ စကားပြောခြင်းကို ခေတ္တရပ်ဆိုင်းလိုက်ပါပြီ။**")
 
-    # ⚡ /spd – အရှိန်ချိန်ညှိရန်
+    # ⚡ /spd
     elif cmd.startswith("/spd"):
         args = cmd.split()
         if len(args) > 1 and args[1] in ["1", "2", "3"]:
@@ -460,36 +406,37 @@ async def handle_bot_commands(event):
         else:
             await event.reply("❌ **အသုံးပြုပုံစံ မှားယွင်းနေပါသည်။**\n`/spd 1` (နှေး), `/spd 2` (ပုံမှန်) သို့မဟုတ် `/spd 3` (မြန်) ဟု ရွေးချယ်ပေးပါ။")
 
-    # 🔍 /findspawn – Spawn Bot ရှိသော Group များကို ရှာဖွေပေးမည်
-    elif cmd == "/gp":
-        await event.reply("🔍 **Spawn Bot ရှိသော Group များကို ရှာဖွေနေပါသည်...**\nMatrix Group သို့ ရလဒ်များ ပို့ပေးပါမည်။ (အနည်းငယ်စောင့်ပါ)")
+    # 🔍 /findspawn (အသစ်ပြင်ဆင်ထားသော ဗားရှင်း - Userbot များကိုယ်တိုင် Matrix Group သို့ ပို့ပေးမည်)
+    elif cmd == "/findspawn":
+        # 👇 Owner ကို သိစေရန်
+        await event.reply("🔍 **Spawn Bot ရှိသော Group များကို ရှာဖွေနေပါသည်...**\nတွေ့ရှိသည့် Group များကို Power Rangers များက Matrix Group သို့ တိုက်ရိုက်ပို့ပေးပါမည်။")
 
-        all_clients = []
-        if userbot:
-            all_clients.append(("👑 Main Userbot", userbot))
-        for idx, client in enumerate(powerranger_clients, 1):
-            all_clients.append((f"🤖 Power Ranger #{idx}", client))
-
-        if not all_clients:
-            await event.reply("❌ ချိတ်ဆက်ထားသော Userbot မရှိပါ။")
+        if not powerranger_clients:
+            await event.reply("❌ ချိတ်ဆက်ထားသော Power Ranger တစ်ခုမှ မရှိပါ။ `/pr` ဖြင့် ဦးစွာ ထည့်သွင်းပါ။")
             return
 
-        results = ["🔍 **Spawn Bot ရှိသော Group များ**"]
-        results.append("═" * 35)
-        found_count = 0
-
-        for label, client in all_clients:
+        # 👇 Power Rangers အကုန်လုံးကို Loop ပတ်ပြီး Spawn Bot ရှာစေမယ်
+        for idx, client in enumerate(powerranger_clients, 1):
             try:
                 me = await client.get_me()
-                client_name = f"{me.first_name or ''} {me.last_name or ''}".strip() or "No Name"
-                results.append(f"\n📌 {label} (ID: `{me.id}`) - {client_name}")
+                if me is None:
+                    await client.send_message(MATRIX_GROUP_ID, f"⚠️ Power Ranger #{idx}: အကောင့် ချိတ်ဆက်မှု ပျက်နေသည် (Skipped)")
+                    continue
 
+                client_name = f"{me.first_name or ''} {me.last_name or ''}".strip() or "No Name"
+                header = f"🔍 **Power Ranger #{idx} ({client_name}) မှ တွေ့ရှိချက်များ**\n═" * 35
+                await client.send_message(MATRIX_GROUP_ID, header)
+
+                found_any = False
                 async for dialog in client.iter_dialogs():
                     entity = dialog.entity
-                    if not (dialog.is_group or dialog.is_channel or dialog.is_megagroup):
+
+                    # 🛠️ is_megagroup ကို ဖယ်ရှားပြီး is_group / is_channel ကိုသာ စစ်ဆေးပါ
+                    if not (dialog.is_group or dialog.is_channel):
                         continue
 
                     try:
+                        # Spawn Bot ရှိမရှိ စစ်ဆေးရန် နောက်ဆုံး ၁၀ ကြောင်း ဖတ်မယ်
                         async for msg in client.iter_messages(entity, limit=10):
                             if msg.sender_id == SPAWN_BOT_ID:
                                 title = entity.title or "Unknown Group"
@@ -513,45 +460,38 @@ async def handle_bot_commands(event):
                                 if not link:
                                     link = f"Private Group (ID: `{chat_id}`)"
 
-                                results.append(f"  ✅ {title}")
-                                results.append(f"     ├─ ID: `{chat_id}`")
-                                results.append(f"     └─ Link: {link}")
-                                found_count += 1
-                                break
+                                # 🎯 ဒီနေရာမှာ Userbot ကိုယ်တိုင် Matrix Group ကို ပို့ပေးမယ်
+                                message = (
+                                    f"✅ **{title}**\n"
+                                    f"├─ ID: `{chat_id}`\n"
+                                    f"└─ Link: {link}"
+                                )
+                                await client.send_message(MATRIX_GROUP_ID, message)
+                                found_any = True
+                                break  # ဒီ Group အတွက် တွေ့ပြီဆိုရင် ရပ်မယ်
                     except Exception:
-                        continue
+                        continue  # အတွင်းပိုင်း အမှားကို လျစ်လျူရှုပြီး ဆက်လုပ်မယ်
+
+                if not found_any:
+                    await client.send_message(MATRIX_GROUP_ID, f"❌ Power Ranger #{idx}: Spawn Bot ရှိသော Group မတွေ့ရှိပါ။")
+
             except Exception as e:
-                results.append(f"❌ {label}: {str(e)[:100]}")
+                # Error ဖြစ်ရင် Matrix Group ကို ပို့ပေးမယ်
+                error_msg = f"❌ Power Ranger #{idx}: {str(e)[:100]}"
+                await client.send_message(MATRIX_GROUP_ID, error_msg)
 
-        if found_count == 0:
-            final_text = "❌ **Spawn Bot ရှိသော Group တစ်ခုမှ မတွေ့ရှိပါ။**"
-        else:
-            results.append(f"\n✅ စုစုပေါင်း {found_count} ခု တွေ့ရှိပါသည်။")
-            final_text = "\n".join(results)
-
-        try:
-            if len(final_text) > 4000:
-                from io import BytesIO
-                file = BytesIO(final_text.encode('utf-8'))
-                file.name = "spawn_groups.txt"
-                await bot.send_file(MATRIX_GROUP_ID, file, caption="🔍 **Spawn Bot ရှိသော Group များ**")
-            else:
-                await bot.send_message(MATRIX_GROUP_ID, final_text)
-            await event.reply("✅ **Spawn Group များကို Matrix Group သို့ အောင်မြင်စွာ ပို့ပြီးပါပြီ။**")
-        except Exception as e:
-            await event.reply(f"❌ ပို့ရာတွင် အမှားရှိသွားသည်: {e}")
-
+        await event.reply("✅ **Spawn Group ရှာဖွေခြင်း ပြီးဆုံးပါပြီ။**\nMatrix Group အတွင်း Power Rangers များထံမှ တွေ့ရှိချက်များကို ကြည့်ရှုပါ။")
 
 # ==========================================
-# 🚀 SYSTEM STARTUP LOGIC
+# 🚀 SYSTEM STARTUP
 # ==========================================
 async def startup():
     global is_active, userbot, powerranger_clients
     print("⏳ System starting up and loading configurations from MongoDB...")
-    
+
     asyncio.create_task(start_dummy_web_server())
     asyncio.create_task(start_global_talk_loop())
-    
+
     try:
         deleted = await reply_save_col.delete_many({"$expr": {"$lt": [{"$strLenCP": "$trigger"}, 3]}})
         if deleted.deleted_count > 0:
@@ -564,7 +504,7 @@ async def startup():
         is_active = True
         print("➡️ Auto-Reply Status: ACTIVE")
 
-    # Load main userbot session from DB
+    # Load main userbot session
     session_doc = await marcuz_col.find_one({"key": "string_session"})
     if session_doc:
         try:
@@ -591,7 +531,6 @@ async def startup():
                 pr_client = TelegramClient(StringSession(pr_session), APP_ID, APP_HASH)
                 await pr_client.start()
                 powerranger_clients.append(pr_client)
-                # set initial random cooldown
                 bot_last_send[pr_client] = time.time() + random.uniform(0, 2.0)
             except Exception as pr_err:
                 print(f"⚠️ Failed to connect a Power Ranger account from DB: {pr_err}")
