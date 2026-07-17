@@ -433,7 +433,7 @@ async def handle_bot_commands(event):
             await event.reply(f"❌ Power Ranger Bot ချိတ်ဆက်မှု ပျက်ကွက်ပါသည်- {e}")
 
     # 🗣️ /talkon – စကားပြောစတင်ရန်
-    elif cmd == "/talkon":
+    elif cmd == "/on":
         is_powerranger_talking = True
         # cooldown အားလုံးကို ပြန်သတ်မှတ်ပြီး ကျပန်းနှောင့်နှေးပေးခြင်း
         all_bots = []
@@ -441,12 +441,12 @@ async def handle_bot_commands(event):
             all_bots.append(userbot)
         all_bots.extend(powerranger_clients)
         now = time.time()
-        for bot in all_bots:
-            bot_last_send[bot] = now + random.uniform(0.1, 0.5)
+        for b in all_bots:
+            bot_last_send[b] = now + random.uniform(0.1, 0.5)
         await event.reply("🗣️ **Power Rangers များ Matrix Group တွင် Random စကားပြောခြင်း လုပ်ငန်းစဉ် စတင်ပါပြီ။**")
 
     # 🤐 /talkoff – စကားပြောရပ်ရန်
-    elif cmd == "/talkoff":
+    elif cmd == "/off":
         is_powerranger_talking = False
         await event.reply("🤐 **Power Rangers များ စကားပြောခြင်းကို ခေတ္တရပ်ဆိုင်းလိုက်ပါပြီ။**")
 
@@ -461,7 +461,7 @@ async def handle_bot_commands(event):
             await event.reply("❌ **အသုံးပြုပုံစံ မှားယွင်းနေပါသည်။**\n`/spd 1` (နှေး), `/spd 2` (ပုံမှန်) သို့မဟုတ် `/spd 3` (မြန်) ဟု ရွေးချယ်ပေးပါ။")
 
     # 🔍 /findspawn – Spawn Bot ရှိသော Group များကို ရှာဖွေပေးမည်
-    elif cmd == "/findspawn":
+    elif cmd == "/gp":
         await event.reply("🔍 **Spawn Bot ရှိသော Group များကို ရှာဖွေနေပါသည်...**\nMatrix Group သို့ ရလဒ်များ ပို့ပေးပါမည်။ (အနည်းငယ်စောင့်ပါ)")
 
         all_clients = []
