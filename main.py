@@ -10,7 +10,7 @@ from telethon.sessions import StringSession
 from motor.motor_asyncio import AsyncIOMotorClient
 from telethon.tl.types import UserStatusEmpty, UserStatusOffline, UserStatusRecently, UserStatusLastWeek, UserStatusLastMonth
 from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
-from telethon.errors import FloodWaitError, UserNotParticipantError
+from telethon.errors import FloodWaitError, UserNotParticipantError, AlreadyParticipantError
 
 # ==========================================
 # ⚙️ CONFIGURATION
@@ -160,7 +160,7 @@ async def start_global_talk_loop():
 # ==========================================
 # 🤖 OFFICIAL BOT COMMAND HANDLERS
 # ==========================================
-@bot.on(events.NewMessage)   # အားလုံးမှ command လက်ခံရန် filter ဖယ်ထား
+@bot.on(events.NewMessage)
 async def handle_bot_commands(event):
     global is_active, userbot, is_scraping, is_talker_active, is_copy_active
     global is_powerranger_talking, powerranger_speed, powerranger_clients
@@ -257,7 +257,7 @@ async def handle_bot_commands(event):
 
     # ======== NEW COMMANDS FOR GROUP MANAGEMENT ========
 
-    # 🚪 /go – Group ဝင်ရန်
+    # 🚪 /go – Group ဝင်ရန် (ပြင်ဆင်ထားသော ဗားရှင်း)
     if cmd == "/go":
         if not event.is_reply:
             await event.reply("❌ `/go` ကို Group invite link ပါတဲ့ message ကို reply လုပ်ပြီး သုံးပေးပါ။")
@@ -267,12 +267,24 @@ async def handle_bot_commands(event):
             await event.reply("❌ Reply လုပ်ထားတဲ့ message မှာ link မပါပါ။")
             return
 
-        # Link ကို extract လုပ်မယ်
-        link_match = re.search(r'(https?://t\.me/joinchat/\S+|https?://t\.me/\+[A-Za-z0-9_]+)', reply_msg.text)
+        # Link ကို extract လုပ် (joinchat/ နဲ့ + နှစ်မျိုးလုံး ဖမ်းမယ်)
+        link_match = re.search(r'(https?://t\.me/(joinchat/|\+)[A-Za-z0-9_-]+)', reply_msg.text)
         if not link_match:
             await event.reply("❌ တရားဝင် Telegram Group invite link မတွေ့ပါ။")
             return
         invite_link = link_match.group(0)
+
+        # hash ကို ထုတ်ယူမယ်
+        if 'joinchat/' in invite_link:
+            hash_part = invite_link.split('joinchat/')[1].split('?')[0]
+        elif '+' in invite_link:
+            hash_part = invite_link.split('+')[1].split('?')[0]
+        else:
+            hash_part = None
+
+        if not hash_part:
+            await event.reply("❌ Link မှ hash ကို ထုတ်ယူမရပါ။")
+            return
 
         # Power Ranger နဲ့ Userbot အားလုံးကို စုစည်း
         all_clients = []
@@ -287,32 +299,58 @@ async def handle_bot_commands(event):
         await event.reply(f"⏳ Group ထဲ ဝင်နေပါပြီ… (Clients {len(all_clients)})")
 
         success_count = 0
+        first_error = None
+
         for client in all_clients:
             try:
-                # invite link ကို hash နဲ့ extract လုပ်
-                if 'joinchat/' in invite_link:
-                    hash_part = invite_link.split('joinchat/')[1].split('?')[0]
-                    await client(ImportChatInviteRequest(hash_part))
-                else:  # + link
-                    await client.join_channel(invite_link)
+                # ImportChatInviteRequest ကို hash နဲ့ သုံးပါ
+                await client(ImportChatInviteRequest(hash_part))
                 success_count += 1
-                await asyncio.sleep(0.5)  # flood မဖြစ်အောင်
+            except AlreadyParticipantError:
+                # သွင်းပြီးသား အကောင့်ဖြစ်နေရင် အောင်မြင်ပြီးသား သတ်မှတ်
+                success_count += 1
             except FloodWaitError as e:
                 await asyncio.sleep(e.seconds + 1)
+                # ပြန်ကြိုးစားမယ်
+                try:
+                    await client(ImportChatInviteRequest(hash_part))
+                    success_count += 1
+                except Exception as e2:
+                    if first_error is None:
+                        first_error = f"FloodWait ပြီးနောက် ပျက်ကွက်: {e2}"
             except Exception as e:
+                if first_error is None:
+                    first_error = str(e)
                 print(f"Join error for {client}: {e}")
 
+            await asyncio.sleep(0.3)  # flood ကာကွယ်
+
         if success_count == 0:
-            await event.reply("❌ ဘယ် client မှ မဝင်နိုင်ခဲ့ပါ။ link မှားနိုင်သည် သို့မဟုတ် ပါဝင်ခွင့်မရှိပါ။")
+            error_msg = f"❌ ဘယ် client မှ မဝင်နိုင်ခဲ့ပါ။\n"
+            if first_error:
+                error_msg += f"ပထမဆုံး error: `{first_error}`"
+            else:
+                error_msg += "link မှားနိုင်သည် သို့မဟုတ် ပါဝင်ခွင့်မရှိပါ။"
+            await event.reply(error_msg)
             return
 
-        # Group ID ကို သိမ်းမယ် (ပထမဆုံး ဝင်တဲ့ client က fetch)
+        # Group ID ကို သိမ်းမယ် (ပထမဆုံး အောင်မြင်တဲ့ client က fetch)
         try:
             chat = await all_clients[0].get_entity(invite_link)
             target_group_id = chat.id
             await event.reply(f"✅ Group `{chat.title}` ထဲကို အကောင့် {success_count} ခု အောင်မြင်စွာ ဝင်ရောက်ပြီးပါပြီ။\nGroup ID: `{target_group_id}`")
         except Exception as e:
-            await event.reply(f"⚠️ Group ဝင်ပြီးသော်လည်း ID ရယူရာတွင် အမှားရှိသည်: {e}")
+            # အထက်နည်းမရရင် dialog ထဲကရှာမယ်
+            try:
+                async for dialog in all_clients[0].iter_dialogs():
+                    if dialog.is_group and dialog.name and (hash_part in str(dialog.id) or invite_link in str(dialog.id)):
+                        target_group_id = dialog.id
+                        await event.reply(f"✅ Group `{dialog.name}` ထဲကို အကောင့် {success_count} ခု အောင်မြင်စွာ ဝင်ရောက်ပြီးပါပြီ။\nGroup ID: `{target_group_id}`")
+                        break
+                else:
+                    await event.reply(f"⚠️ Group ဝင်ပြီးသော်လည်း ID ရယူရာတွင် အမှားရှိသည်: {e}")
+            except Exception as e2:
+                await event.reply(f"⚠️ Group ID ရယူရန် မအောင်မြင်ပါ: {e2}")
         return
 
     # 🔍 /check – Member စစ်ဆေးခြင်း
@@ -412,7 +450,6 @@ async def handle_bot_commands(event):
         await event.reply(f"⏳ လူ {len(bad_users)} ဦးကို စတင်နှင်ထုတ်နေပါပြီ…")
 
         # Admin ရှိသော client ကို ရွေး (check လုပ်ခဲ့တဲ့ client ကိုပဲ သုံးမယ်)
-        # သို့သော် ပိုမိုမြန်ဆန်စေရန် client အားလုံးကို သုံးနိုင်တယ် (ဒီမှာတော့ ပထမ admin client ကိုပဲ သုံးမယ်)
         client_to_use = None
         all_clients = [userbot] + powerranger_clients if userbot else powerranger_clients
         for cl in all_clients:
