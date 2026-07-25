@@ -11,8 +11,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from telethon.tl.types import UserStatusEmpty, UserStatusOffline, UserStatusRecently, UserStatusLastWeek, UserStatusLastMonth
 from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
 from telethon.errors import FloodWaitError
-from telethon.errors.rpcerrorlist import UserNotParticipantError, AlreadyParticipantError
-
+from telethon.errors import FloodWaitError
+from telethon.errors import UserNotParticipantError, AlreadyParticipantError
 # ==========================================
 # ⚙️ CONFIGURATION
 # ==========================================
