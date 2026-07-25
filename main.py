@@ -8,6 +8,9 @@ import unicodedata
 from telethon import TelegramClient, events, errors, functions
 from telethon.sessions import StringSession
 from motor.motor_asyncio import AsyncIOMotorClient
+from telethon.tl.types import UserStatusEmpty, UserStatusOffline, UserStatusRecently, UserStatusLastWeek, UserStatusLastMonth
+from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
+from telethon.errors import FloodWaitError, UserNotParticipantError
 
 # ==========================================
 # ⚙️ CONFIGURATION
@@ -22,7 +25,6 @@ ADMIN_ID = 6015356597
 MATRIX_GROUP_ID = None
 COOLDOWN_TIME = 15
 
-
 # Global States
 is_active = False
 is_scraping = False
@@ -36,6 +38,11 @@ is_powerranger_talking = False
 powerranger_speed = 2
 powerranger_clients = []
 bot_last_send = {}
+
+# New globals for Group Management
+target_group_id = None          # /go နဲ့ သတ်မှတ်ထားတဲ့ Group ID
+bad_users = []                  # /check မှ စုစည်းထားတဲ့ User ID စာရင်း
+check_in_progress = False       # /check လုပ်နေစဉ် ပြန်မခေါ်ရအောင်
 
 # MongoDB Setup
 client_mongo = AsyncIOMotorClient(MONGO_URI)
@@ -153,18 +160,21 @@ async def start_global_talk_loop():
 # ==========================================
 # 🤖 OFFICIAL BOT COMMAND HANDLERS
 # ==========================================
-@bot.on(events.NewMessage(chats=[SPECIFIC_GROUP, MATRIX_GROUP_ID]))
+@bot.on(events.NewMessage)   # အားလုံးမှ command လက်ခံရန် filter ဖယ်ထား
 async def handle_bot_commands(event):
-    global is_active, userbot, is_scraping, is_talker_active, is_catch_stopped, is_copy_active
+    global is_active, userbot, is_scraping, is_talker_active, is_copy_active
     global is_powerranger_talking, powerranger_speed, powerranger_clients
+    global target_group_id, bad_users, check_in_progress
 
+    # Owner သာလျှင် command များကို လုပ်ဆောင်ခွင့်ရှိမည်
     if event.sender_id != OWNER_ID:
         return
 
     cmd = event.message.text.strip() if event.message.text else ""
 
+    # ======== EXISTING COMMANDS ========
     # 🎯 copyon / copyoff
-    elif cmd == "copyon":
+    if cmd == "copyon":
         is_copy_active = True
         await event.reply("🎯 **Copy Mode: [ON]**\nယခုအချိန်မှစ၍ Matrix Group တွင် Chief ပြောသမျှကို Userbot များအားလုံး လိုက်အော်ပါမည်။")
         return
@@ -187,7 +197,7 @@ async def handle_bot_commands(event):
                 print(f"❌ Copy Mode Error from a Userbot: {ce}")
 
     # ➕ /addpr
-    elif cmd.startswith("/addpr") or cmd.startswith("/pr"):
+    if cmd.startswith("/addpr") or cmd.startswith("/pr"):
         args = cmd.split(maxsplit=1)
         session_str = None
         if len(args) > 1:
@@ -213,26 +223,29 @@ async def handle_bot_commands(event):
             await event.reply(f"🚀 Power Ranger Bot #{len(powerranger_clients)} အောင်မြင်စွာ စတင်လိုက်ပါပြီ။ Matrix အဖွဲ့ဝင်အသစ် တိုးလာပါပြီ။")
         except Exception as e:
             await event.reply(f"❌ Power Ranger Bot ချိတ်ဆက်မှု ပျက်ကွက်ပါသည်- {e}")
+        return
 
     # 🗣️ /talkon
-    elif cmd == "/talkon":
+    if cmd == "/talkon":
         is_powerranger_talking = True
         all_bots = []
         if userbot:
             all_bots.append(userbot)
         all_bots.extend(powerranger_clients)
         now = time.time()
-        for b in all_bots:  # 👈 FIXED: bot → b
+        for b in all_bots:
             bot_last_send[b] = now + random.uniform(0.1, 0.5)
         await event.reply("🗣️ **Power Rangers များ Matrix Group တွင် Random စကားပြောခြင်း လုပ်ငန်းစဉ် စတင်ပါပြီ။**")
+        return
 
     # 🤐 /talkoff
-    elif cmd == "/talkoff":
+    if cmd == "/talkoff":
         is_powerranger_talking = False
         await event.reply("🤐 **Power Rangers များ စကားပြောခြင်းကို ခေတ္တရပ်ဆိုင်းလိုက်ပါပြီ။**")
+        return
 
     # ⚡ /spd
-    elif cmd.startswith("/spd"):
+    if cmd.startswith("/spd"):
         args = cmd.split()
         if len(args) > 1 and args[1] in ["1", "2", "3"]:
             powerranger_speed = int(args[1])
@@ -240,6 +253,204 @@ async def handle_bot_commands(event):
             await event.reply(f"⚡ **Power Ranger စကားပြောနှုန်း အရှိန်ကို အဆင့် {powerranger_speed} ({speed_labels[powerranger_speed]}) သို့ ပြောင်းလဲသတ်မှတ်လိုက်ပါပြီ။**")
         else:
             await event.reply("❌ **အသုံးပြုပုံစံ မှားယွင်းနေပါသည်။**\n`/spd 1` (နှေး), `/spd 2` (ပုံမှန်) သို့မဟုတ် `/spd 3` (မြန်) ဟု ရွေးချယ်ပေးပါ။")
+        return
+
+    # ======== NEW COMMANDS FOR GROUP MANAGEMENT ========
+
+    # 🚪 /go – Group ဝင်ရန်
+    if cmd == "/go":
+        if not event.is_reply:
+            await event.reply("❌ `/go` ကို Group invite link ပါတဲ့ message ကို reply လုပ်ပြီး သုံးပေးပါ။")
+            return
+        reply_msg = await event.get_reply_message()
+        if not reply_msg.text:
+            await event.reply("❌ Reply လုပ်ထားတဲ့ message မှာ link မပါပါ။")
+            return
+
+        # Link ကို extract လုပ်မယ်
+        link_match = re.search(r'(https?://t\.me/joinchat/\S+|https?://t\.me/\+[A-Za-z0-9_]+)', reply_msg.text)
+        if not link_match:
+            await event.reply("❌ တရားဝင် Telegram Group invite link မတွေ့ပါ။")
+            return
+        invite_link = link_match.group(0)
+
+        # Power Ranger နဲ့ Userbot အားလုံးကို စုစည်း
+        all_clients = []
+        if userbot:
+            all_clients.append(userbot)
+        all_clients.extend(powerranger_clients)
+
+        if not all_clients:
+            await event.reply("❌ ဝင်ရန် အကောင့်မရှိပါ။ `/addpr` နဲ့ session ထည့်ပါ။")
+            return
+
+        await event.reply(f"⏳ Group ထဲ ဝင်နေပါပြီ… (Clients {len(all_clients)})")
+
+        success_count = 0
+        for client in all_clients:
+            try:
+                # invite link ကို hash နဲ့ extract လုပ်
+                if 'joinchat/' in invite_link:
+                    hash_part = invite_link.split('joinchat/')[1].split('?')[0]
+                    await client(ImportChatInviteRequest(hash_part))
+                else:  # + link
+                    await client.join_channel(invite_link)
+                success_count += 1
+                await asyncio.sleep(0.5)  # flood မဖြစ်အောင်
+            except FloodWaitError as e:
+                await asyncio.sleep(e.seconds + 1)
+            except Exception as e:
+                print(f"Join error for {client}: {e}")
+
+        if success_count == 0:
+            await event.reply("❌ ဘယ် client မှ မဝင်နိုင်ခဲ့ပါ။ link မှားနိုင်သည် သို့မဟုတ် ပါဝင်ခွင့်မရှိပါ။")
+            return
+
+        # Group ID ကို သိမ်းမယ် (ပထမဆုံး ဝင်တဲ့ client က fetch)
+        try:
+            chat = await all_clients[0].get_entity(invite_link)
+            target_group_id = chat.id
+            await event.reply(f"✅ Group `{chat.title}` ထဲကို အကောင့် {success_count} ခု အောင်မြင်စွာ ဝင်ရောက်ပြီးပါပြီ။\nGroup ID: `{target_group_id}`")
+        except Exception as e:
+            await event.reply(f"⚠️ Group ဝင်ပြီးသော်လည်း ID ရယူရာတွင် အမှားရှိသည်: {e}")
+        return
+
+    # 🔍 /check – Member စစ်ဆေးခြင်း
+    if cmd == "/check":
+        if target_group_id is None:
+            await event.reply("❌ ဦးစွာ `/go` နဲ့ Group ဝင်ပါ။")
+            return
+        if check_in_progress:
+            await event.reply("⏳ လက်ရှိ check လုပ်နေဆဲဖြစ်သည်။ ပြီးမှ ထပ်ခေါ်ပါ။")
+            return
+
+        check_in_progress = True
+        await event.reply("🔍 Group ထဲက Member အားလုံးကို စတင်စစ်ဆေးနေပါပြီ… (ကြာနိုင်ပါသည်)")
+
+        # Admin ရှိသည့် client ကို ရွေးမယ်
+        client_to_use = None
+        all_clients = [userbot] + powerranger_clients if userbot else powerranger_clients
+        for cl in all_clients:
+            if cl is None:
+                continue
+            try:
+                # Admin ဟုတ်မဟုတ် စမ်းကြည့် (participants ရယူနိုင်ရင် admin ဖြစ်နိုင်တယ်)
+                await cl.get_participants(target_group_id, limit=1)
+                client_to_use = cl
+                break
+            except Exception:
+                continue
+
+        if client_to_use is None:
+            await event.reply("❌ ဘယ် client မှ admin မဟုတ်ပါ (သို့) Group ထဲမရှိပါ။")
+            check_in_progress = False
+            return
+
+        bad_users = []
+        total_members = 0
+        try:
+            async for participant in client_to_use.iter_participants(target_group_id):
+                total_members += 1
+                user = participant.user if hasattr(participant, 'user') else participant
+                if user.deleted:
+                    bad_users.append((user.id, user.first_name or "Deleted", "Deleted Account"))
+                    continue
+                # status ကို စစ်ဆေး
+                status = getattr(user, 'status', None)
+                if status is None:
+                    continue
+                # ၆ လကျော် inactive စစ်
+                if isinstance(status, UserStatusOffline):
+                    if status.was_online:
+                        six_months_ago = time.time() - (6 * 30 * 24 * 3600)
+                        if status.was_online.timestamp() < six_months_ago:
+                            bad_users.append((user.id, user.first_name or "No Name", "Offline >6 months"))
+                elif isinstance(status, UserStatusEmpty):
+                    bad_users.append((user.id, user.first_name or "No Name", "Never seen"))
+                # UserStatusRecently, LastWeek, LastMonth တွေက ၆ လထက် မကြာသေးဘူးလို့ ယူဆ
+        except FloodWaitError as e:
+            await event.reply(f"⏳ Flood wait {e.seconds} seconds ကြာမည်။ နောက်မှ ထပ်ကြည့်ပါ။")
+            check_in_progress = False
+            return
+        except Exception as e:
+            await event.reply(f"❌ Check လုပ်ရာတွင် အမှားရှိသည်: {e}")
+            check_in_progress = False
+            return
+
+        check_in_progress = False
+
+        # ရလဒ်ကို ပြပေးမယ်
+        if bad_users:
+            msg = f"📊 **စစ်ဆေးမှု ရလဒ်**\n\nအုပ်စုထဲရှိ စုစုပေါင်း Member: {total_members}\n"
+            msg += f"**Deleted Account + Inactive (>6 months) စုစုပေါင်း: {len(bad_users)}**\n\n"
+            # နာမည်စာရင်းကို အုပ်စုလိုက်ဖော်ပြမယ် (အကျဉ်းချုပ်)
+            for uid, name, reason in bad_users[:50]:  # 50 ခုပဲ ပြမယ်
+                msg += f"• {name} (ID: {uid}) – {reason}\n"
+            if len(bad_users) > 50:
+                msg += f"\n...နှင့် နောက်ထပ် {len(bad_users)-50} ဦး"
+            await event.reply(msg)
+            # စာရင်းကို file အနေနဲ့လည်း ပို့ပေးမယ်
+            with open("bad_users.txt", "w", encoding="utf-8") as f:
+                for uid, name, reason in bad_users:
+                    f.write(f"{uid},{name},{reason}\n")
+            await event.reply("📄 အပြည့်အစုံစာရင်းကို `bad_users.txt` ဖိုင်အနေနဲ့ တင်ပေးလိုက်ပါပြီ။")
+            # global variable မှာ သိမ်းထားမယ်
+            globals()['bad_users'] = bad_users
+        else:
+            await event.reply("✅ ဖယ်ရှားရန် လိုအပ်သည့် Account တစ်ခုမှ မတွေ့ပါ။")
+        return
+
+    # 🗑️ /remove – နှင်ထုတ်ခြင်း
+    if cmd == "/remove":
+        if target_group_id is None:
+            await event.reply("❌ ဦးစွာ Group ဝင်ပါ (`/go`).")
+            return
+        if not bad_users:
+            await event.reply("❌ `/check` ကို ဦးစွာ လုပ်ပါ။ ဖယ်ရှားရန် စာရင်း မရှိပါ။")
+            return
+
+        await event.reply(f"⏳ လူ {len(bad_users)} ဦးကို စတင်နှင်ထုတ်နေပါပြီ…")
+
+        # Admin ရှိသော client ကို ရွေး (check လုပ်ခဲ့တဲ့ client ကိုပဲ သုံးမယ်)
+        # သို့သော် ပိုမိုမြန်ဆန်စေရန် client အားလုံးကို သုံးနိုင်တယ် (ဒီမှာတော့ ပထမ admin client ကိုပဲ သုံးမယ်)
+        client_to_use = None
+        all_clients = [userbot] + powerranger_clients if userbot else powerranger_clients
+        for cl in all_clients:
+            if cl is None:
+                continue
+            try:
+                await cl.get_participants(target_group_id, limit=1)
+                client_to_use = cl
+                break
+            except Exception:
+                continue
+
+        if client_to_use is None:
+            await event.reply("❌ Admin ရှိသော client မတွေ့ပါ။")
+            return
+
+        removed = 0
+        total = len(bad_users)
+        report_interval = 100
+
+        for i, (uid, name, reason) in enumerate(bad_users, 1):
+            try:
+                await client_to_use.kick_participant(target_group_id, uid)
+                removed += 1
+                if removed % report_interval == 0:
+                    await event.reply(f"✅ {removed} ဦး နှင်ထုတ်ပြီးပါပြီ။ (လက်ကျန် {total-removed})")
+                await asyncio.sleep(0.3)  # flood ကာကွယ်
+            except FloodWaitError as e:
+                await event.reply(f"⏳ Flood wait {e.seconds}s ကြာမည်။ စောင့်နေပါ…")
+                await asyncio.sleep(e.seconds + 1)
+            except Exception as e:
+                print(f"Kick error for {uid}: {e}")
+
+        await event.reply(f"✅ **ဖယ်ရှားခြင်း ပြီးဆုံးပါပြီ။**\nစုစုပေါင်း နှင်ထုတ်ခဲ့သူ {removed} ဦး။")
+
+        # ထုတ်ပြီးသား စာရင်းကို ရှင်းမယ်
+        bad_users = []
+        return
 
 # ==========================================
 # 🚀 SYSTEM STARTUP
