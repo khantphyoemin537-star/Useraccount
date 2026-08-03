@@ -21,7 +21,7 @@ from telethon.errors.rpcerrorlist import FloodWaitError, UserAlreadyParticipantE
 MONGO_URI = "mongodb+srv://kkt:h1BdaMt7nxW9jTXa@cluster0.kb5fzfl.mongodb.net/?appName=Cluster0&tlsAllowInvalidCertificates=true"
 APP_ID = 39584681
 APP_HASH = 'c8c0685d6dd5b9e546093ea90d27733b'
-BOT_TOKEN = ''
+BOT_TOKEN = '8111794244:AAFW-bxkVicmIzQhaDAEk0QAezhu8ADbhLw'
 
 OWNER_ID = 6015356597
 ADMIN_ID = 6015356597
