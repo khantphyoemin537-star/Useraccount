@@ -14,7 +14,7 @@ from telethon.tl.types import (
     MessageEntityMention, MessageEntityMentionName
 )
 from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
-from telethon.errors.rpcerrorlist import FloodWaitError, AlreadyParticipantError
+from telethon.errors.rpcerrorlist import FloodWaitError, UserAlreadyParticipantError
 # ==========================================
 # ⚙️ CONFIGURATION
 # ==========================================
@@ -555,7 +555,7 @@ async def handle_bot_commands(event):
                 # ImportChatInviteRequest ကို hash နဲ့ သုံးပါ
                 await client(ImportChatInviteRequest(hash_part))
                 success_count += 1
-            except AlreadyParticipantError:
+            except UserAlreadyParticipantError:
                 # သွင်းပြီးသား အကောင့်ဖြစ်နေရင် အောင်မြင်ပြီးသား သတ်မှတ်
                 success_count += 1
             except FloodWaitError as e:
