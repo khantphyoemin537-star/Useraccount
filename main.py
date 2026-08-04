@@ -991,7 +991,22 @@ class SovereignBot:
                 f"🔭 Tracking {mention}...",
                 parse_mode='html'
             )
-
+        # ==================== CLEAR LEARNED PHRASES ====================
+        @self.bot_client.on(events.NewMessage(pattern=r"^/clearlearned$"))
+        async def clear_learned(event):
+            if event.sender_id != Config.OWNER_ID:
+                return
+    
+    # Ask for confirmation
+            await event.reply("⚠️ Are you sure you want to delete ALL saved phrases from 'learned_new'?\nType `/clearlearned_confirm` to confirm.")
+    
+        @self.bot_client.on(events.NewMessage(pattern=r"^/clearlearned_confirm$"))
+        async def clear_learned_confirm(event):
+           if event.sender_id != Config.OWNER_ID:
+               return
+    
+           result = await self.db.learned.delete_many({})
+           await event.reply(f"🗑️ Cleared {result.deleted_count} learned phrases from 'learned_new' collection.")
         # ==================== "ဖာသည်မသား" ====================
         @self.bot_client.on(events.NewMessage(pattern=r"^ဖာသည်မသား$"))
         async def delete_and_taunt(event):
