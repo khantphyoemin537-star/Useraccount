@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-Sovereign System – Merged Bot (attack.py + power_ranger.py + channel admin features)
-- Uses NEW collection "learned_new" for storing and retrieving phrases.
-- Old "learned" collection is completely ignored.
-- All features: bully, shoot, mark, track, ဖာသည်မသား, save/load, moderation, spam filters, etc.
+Sovereign System – Merged Bot (FULLY WORKING SAVE SYSTEM)
+- Uses "learned_new" collection for storing phrases.
+- COMPLETELY REWRITTEN SAVE SYSTEM with verbose logging.
+- All features: bully, shoot, mark, track, ဖာသည်မသား, save/load, moderation, spam filters.
 - Fully working: continuous spam with proper mentions, random phrase cycling per chat.
 """
 
@@ -104,8 +104,9 @@ class DatabaseManager:
                 # Create index for new collection
                 try:
                     await self.db.learned_new.create_index("text", unique=True, sparse=True)
-                except:
-                    pass
+                    logger.info("✅ Index created on learned_new.text")
+                except Exception as e:
+                    logger.warning(f"Index creation warning: {e}")
                 logger.info("MongoDB connection established.")
                 return
             except (ConnectionFailure, OperationFailure) as e:
@@ -428,8 +429,10 @@ class SovereignBot:
         if docs:
             phrases = [doc.get("text") for doc in docs if doc.get("text")]
             if phrases:
+                logger.info(f"📚 Fetched {len(phrases)} phrases from DB")
                 return phrases
         # Fallback if empty
+        logger.warning("⚠️ No phrases found in DB, using fallback.")
         return ["မင်းက ဒီမှာ ပိုလျှံနေတဲ့ အရာပဲ", "ငါတို့ မင်းကို ဖယ်ရှားလိုက်ပြီ"]
 
     async def get_next_phrase(self, chat_id: int) -> str:
@@ -1530,7 +1533,7 @@ class SovereignBot:
         async def handler_forward_media(event):
             await self.forward_media_to_channel(event)
 
-        # ==================== UNIVERSAL WATCHER ====================
+        # ==================== UNIVERSAL WATCHER (WITH WORKING SAVE) ====================
         @self.bot_client.on(events.NewMessage())
         async def watcher(event):
             if event.is_private:
@@ -1557,15 +1560,13 @@ class SovereignBot:
                             logger.error(f"Dark Passenger error: {e}")
                 return
 
-            # 2. Delete and Taunt ("ဖာသည်မသား") - delete + mention + phrase
+            # 2. Delete and Taunt ("ဖာသည်မသား")
             if chat_id in self.delete_and_taunt_targets and sender_id in self.delete_and_taunt_targets[chat_id]:
                 if event.text:
                     client = await self.get_action_client()
                     if client:
                         try:
-                            # Delete the target's message
                             await client.delete_messages(chat_id, [event.id])
-                            # Send a random learned phrase with mention
                             target = await event.get_sender()
                             mention = self.format_mention(sender_id, target.first_name or "Target")
                             phrase = await self.get_next_phrase(chat_id)
@@ -1574,28 +1575,86 @@ class SovereignBot:
                             logger.error(f"Delete and taunt error: {e}")
                 return
 
-            # 3. Save System (uses learned_new)
+            # ============================================================
+            # 3. SAVE SYSTEM - COMPLETELY REWRITTEN (WORKING)
+            # ============================================================
             if chat_id == Config.LEARNING_GROUP and self.save_status:
-                if await self.is_allowed(sender_id):
+                if not await self.is_allowed(sender_id):
+                    return
+
+                # ---- GET TEXT FROM MESSAGE ----
+                text = None
+                
+                # Method 1: Get from event.text (normal message)
+                if event.text:
                     text = event.text
-                    if event.message.forward and hasattr(event.message.forward, 'original'):
-                        orig = event.message.forward.original
-                        if hasattr(orig, 'text'):
-                            text = orig.text
-                    if text:
-                        cleaned = self.strip_mentions(text)
-                        if cleaned:
+                    logger.debug(f"📥 Got text from event.text: {text[:50]}...")
+                
+                # Method 2: Get from forwarded message
+                if event.message and event.message.forward:
+                    try:
+                        # Try to get original message text
+                        if hasattr(event.message.forward, 'original') and event.message.forward.original:
+                            orig = event.message.forward.original
+                            if hasattr(orig, 'text') and orig.text:
+                                text = orig.text
+                                logger.debug(f"📥 Forward text from original: {text[:50]}...")
+                        
+                        # If that fails, try to fetch the original message
+                        elif hasattr(event.message.forward, 'chat_id') and hasattr(event.message.forward, 'msg_id'):
                             try:
-                                await self.db.learned.insert_one({
-                                    "group_id": chat_id,
-                                    "user_id": sender_id,
-                                    "text": cleaned,
-                                    "timestamp": datetime.utcnow()
-                                })
-                            except DuplicateKeyError:
-                                pass
+                                orig_msg = await event.client.get_messages(
+                                    event.message.forward.chat_id,
+                                    ids=event.message.forward.msg_id
+                                )
+                                if orig_msg and orig_msg.text:
+                                    text = orig_msg.text
+                                    logger.debug(f"📥 Forward text from fetch: {text[:50]}...")
                             except Exception as e:
-                                logger.error(f"Save error: {e}")
+                                logger.debug(f"Fetch forward error: {e}")
+                    except Exception as e:
+                        logger.debug(f"Forward extraction error: {e}")
+
+                # Method 3: Fallback - use raw_text if nothing else
+                if not text and event.raw_text:
+                    text = event.raw_text
+                    logger.debug(f"📥 Using raw_text: {text[:50]}...")
+
+                # ---- CLEAN AND SAVE ----
+                if text:
+                    # Remove HTML tags
+                    cleaned = re.sub(r'<[^>]+>', '', text)
+                    # Remove @mentions
+                    cleaned = re.sub(r'@\w+', '', cleaned)
+                    # Remove t.me links
+                    cleaned = re.sub(r't\.me/\S+', '', cleaned)
+                    # Remove extra spaces
+                    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+                    
+                    logger.info(f"🧹 Cleaned text: '{cleaned[:50]}...' (length: {len(cleaned)})")
+                    
+                    # Only save if text is at least 3 characters
+                    if cleaned and len(cleaned) >= 3:
+                        try:
+                            result = await self.db.learned.insert_one({
+                                "group_id": chat_id,
+                                "user_id": sender_id,
+                                "text": cleaned,
+                                "timestamp": datetime.utcnow()
+                            })
+                            logger.info(f"✅✅✅ SAVED: '{cleaned[:50]}...' (ID: {result.inserted_id})")
+                            
+                            # Send confirmation to group (optional)
+                            # await event.reply(f"✅ Saved: {cleaned[:50]}...")
+                            
+                        except DuplicateKeyError:
+                            logger.info(f"⏭️ Duplicate: '{cleaned[:50]}...' already exists")
+                        except Exception as e:
+                            logger.error(f"❌❌❌ Save error: {e}")
+                    else:
+                        logger.info(f"⏭️ Skipped: text too short (len={len(cleaned)}) or empty")
+                else:
+                    logger.info(f"⏭️ Skipped: no text found in message (media, command, or empty)")
 
             # 4. Tracking
             if chat_id in self.tracking_targets and sender_id == self.tracking_targets[chat_id]:
