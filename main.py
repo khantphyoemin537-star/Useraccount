@@ -50,7 +50,7 @@ class Config:
     MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://kkt:h1BdaMt7nxW9jTXa@cluster0.kb5fzfl.mongodb.net/?appName=Cluster0&tlsAllowInvalidCertificates=true")
     API_ID = int(os.getenv("API_ID", "35766004"))
     API_HASH = os.getenv("API_HASH", "d15b4226b81724722279bae6af69e22d")
-    BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN", "8111794244:AAH5XKBgSxK7yeNFyc5hp4cWcnIf0BYEV1o")
+    BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN", "8111794244:AAGurFdkxV_KrahEYJemMo-hoQkN1mJJKlU")
     LEARNING_GROUP = int(os.getenv("LEARNING_GROUP", "-1003806830045"))
     TIMEZONE = pytz.timezone(os.getenv("TIMEZONE", "Asia/Yangon"))
     FLASK_PORT = int(os.getenv("PORT", "10000"))
