@@ -3,15 +3,10 @@
 
 """
 Sovereign System – Merged Bot (attack.py + power_ranger.py + channel admin features)
-- Removed KTR (ktr/ktrr) auto-reply
-- Added spam filters, bio/link filter, language filter
-- Added moderation commands: mute, unmute, ban, unban, kick
-- Added media forwarder (group → channel) with subscribe button
-- Added subscriber system (/start channel_alert) and /notifyall
-- All existing attack, save, taunt, userbot pool features remain
-- Fixed "ဖာသည်မသား" to delete every message and reply with random learned phrase
-- Fixed /b to continuously spam until stopped
-- Added new command aliases: /mark, /shoot, /track, /bully
+- Uses NEW collection "learned_new" for storing and retrieving phrases.
+- Old "learned" collection is completely ignored.
+- All features: bully, shoot, mark, track, ဖာသည်မသား, save/load, moderation, spam filters, etc.
+- Fully working: continuous spam with proper mentions, random phrase cycling per chat.
 """
 
 import asyncio
@@ -88,7 +83,7 @@ def run_flask() -> None:
     flask_app.run(host="0.0.0.0", port=Config.FLASK_PORT, threaded=True)
 
 # ------------------------------------------------------------------
-#  DATABASE MANAGER (extended)
+#  DATABASE MANAGER (extended) – NEW COLLECTION "learned_new"
 # ------------------------------------------------------------------
 class DatabaseManager:
     def __init__(self, uri: str):
@@ -106,9 +101,9 @@ class DatabaseManager:
                 )
                 await self.client.admin.command("ping")
                 self.db = self.client["telegram_bot"]
-                # Create indexes
+                # Create index for new collection
                 try:
-                    await self.db.learned.create_index("text", unique=True, sparse=True)
+                    await self.db.learned_new.create_index("text", unique=True, sparse=True)
                 except:
                     pass
                 logger.info("MongoDB connection established.")
@@ -136,9 +131,10 @@ class DatabaseManager:
     def system_col(self):
         return self.db["system_col"]
 
+    # NEW: use learned_new collection instead of learned
     @property
     def learned(self):
-        return self.db["learned"]
+        return self.db["learned_new"]
 
     # Power Ranger collections
     @property
@@ -425,12 +421,15 @@ class SovereignBot:
         return f"<blockquote><b>{text}</b></blockquote>"
 
     # --------------------------------------------------------------
-    #  PHRASE MANAGEMENT – from learned collection
+    #  PHRASE MANAGEMENT – from learned_new collection
     # --------------------------------------------------------------
     async def fetch_learned_phrases(self) -> List[str]:
         docs = await self.db.learned.find().to_list(length=10000)
         if docs:
-            return [doc.get("text") for doc in docs if doc.get("text")]
+            phrases = [doc.get("text") for doc in docs if doc.get("text")]
+            if phrases:
+                return phrases
+        # Fallback if empty
         return ["မင်းက ဒီမှာ ပိုလျှံနေတဲ့ အရာပဲ", "ငါတို့ မင်းကို ဖယ်ရှားလိုက်ပြီ"]
 
     async def get_next_phrase(self, chat_id: int) -> str:
@@ -439,6 +438,7 @@ class SovereignBot:
             phrases = await self.fetch_learned_phrases()
             if not phrases:
                 phrases = ["မင်းက ဒီမှာ ပိုလျှံနေတဲ့ အရာပဲ"]
+            # Shuffle the list for this chat
             random.shuffle(phrases)
             self.phrase_lists[chat_id] = phrases
             self.phrase_indices[chat_id] = 0
@@ -447,6 +447,7 @@ class SovereignBot:
         phrase = phrases[idx]
         idx += 1
         if idx >= len(phrases):
+            # Reshuffle when exhausted
             random.shuffle(phrases)
             idx = 0
         self.phrase_indices[chat_id] = idx
@@ -824,7 +825,7 @@ class SovereignBot:
     # --------------------------------------------------------------
     def _register_handlers(self):
 
-        # ==================== SAVE SYSTEM ====================
+        # ==================== SAVE SYSTEM (uses learned_new) ====================
         @self.bot_client.on(events.NewMessage(pattern=r"^/save on$"))
         async def save_on(event):
             if event.chat_id != Config.LEARNING_GROUP or not await self.is_allowed(event.sender_id):
@@ -836,7 +837,7 @@ class SovereignBot:
                 pass
             await self.bot_client.send_message(
                 Config.LEARNING_GROUP,
-                f"✅ Save mode ON by {self.format_mention(event.sender_id, (await event.get_sender()).first_name or 'User')}",
+                f"✅ Save mode ON (new collection 'learned_new') by {self.format_mention(event.sender_id, (await event.get_sender()).first_name or 'User')}",
                 parse_mode='html'
             )
 
@@ -882,31 +883,40 @@ class SovereignBot:
                 return
 
             chat_id = event.chat_id
-            self.bully_tasks[chat_id] = True
-            mention = self.format_mention(target.id, target.first_name or "Target")
+            target_id = target.id
+            target_name = target.first_name or "Target"
+            mention = self.format_mention(target_id, target_name)
 
+            # Reset phrase cycle for this chat
             self.reset_phrase_cycle(chat_id)
 
-            while self.bully_tasks.get(chat_id, False):
-                client = await self.get_action_client()
-                if not client:
-                    await asyncio.sleep(1)
-                    continue
-                phrase = await self.get_next_phrase(chat_id)
-                try:
-                    await client.send_message(
-                        chat_id,
-                        f"{mention} {phrase}",
-                        reply_to=reply.id,
-                        parse_mode='html'
-                    )
-                    await asyncio.sleep(Config.BULLY_DELAY)
-                except FloodWaitError as e:
-                    await asyncio.sleep(e.seconds + 1)
-                except Exception as e:
-                    logger.error(f"Bully error: {e}")
-                    self.bully_tasks[chat_id] = False
-                    break
+            # Set task flag
+            self.bully_tasks[chat_id] = True
+
+            # Run bully loop in background
+            async def bully_loop():
+                while self.bully_tasks.get(chat_id, False):
+                    client = await self.get_action_client()
+                    if not client:
+                        await asyncio.sleep(1)
+                        continue
+                    phrase = await self.get_next_phrase(chat_id)
+                    try:
+                        await client.send_message(
+                            chat_id,
+                            f"{mention} {phrase}",
+                            reply_to=reply.id,
+                            parse_mode='html'
+                        )
+                        await asyncio.sleep(Config.BULLY_DELAY)
+                    except FloodWaitError as e:
+                        await asyncio.sleep(e.seconds + 1)
+                    except Exception as e:
+                        logger.error(f"Bully error: {e}")
+                        self.bully_tasks[chat_id] = False
+                        break
+
+            asyncio.create_task(bully_loop())
 
         @self.bot_client.on(events.NewMessage(pattern=r"^(/mark|မှတ်|/shoot|ပစ်)$"))
         async def attack_cmds(event):
@@ -932,34 +942,41 @@ class SovereignBot:
 
             chat_id = event.chat_id
             target = await reply.get_sender()
-            mention = self.format_mention(target.id, target.first_name or "Target")
+            target_id = target.id
+            target_name = target.first_name or "Target"
+            mention = self.format_mention(target_id, target_name)
 
             # `/shoot` or `ပစ်` → continuous spam
             if event.text in ("/shoot", "ပစ်"):
                 self.shoot_tasks[chat_id] = True
                 self.reset_phrase_cycle(chat_id)
 
-                while self.shoot_tasks.get(chat_id, False):
-                    client = await self.get_action_client()
-                    if not client:
-                        await asyncio.sleep(1)
-                        continue
-                    phrase = await self.get_next_phrase(chat_id)
-                    try:
-                        await client.send_message(
-                            chat_id,
-                            f"{mention} {phrase}",
-                            parse_mode='html'
-                        )
-                        await asyncio.sleep(Config.SHOOT_DELAY)
-                    except FloodWaitError as e:
-                        await asyncio.sleep(e.seconds + 1)
-                    except Exception as e:
-                        logger.error(f"Shoot error: {e}")
-                        self.shoot_tasks[chat_id] = False
-                        break
+                async def shoot_loop():
+                    while self.shoot_tasks.get(chat_id, False):
+                        client = await self.get_action_client()
+                        if not client:
+                            await asyncio.sleep(1)
+                            continue
+                        phrase = await self.get_next_phrase(chat_id)
+                        try:
+                            await client.send_message(
+                                chat_id,
+                                f"{mention} {phrase}",
+                                parse_mode='html'
+                            )
+                            await asyncio.sleep(Config.SHOOT_DELAY)
+                        except FloodWaitError as e:
+                            await asyncio.sleep(e.seconds + 1)
+                        except Exception as e:
+                            logger.error(f"Shoot error: {e}")
+                            self.shoot_tasks[chat_id] = False
+                            break
+
+                asyncio.create_task(shoot_loop())
+
             else:  # `/mark` or `မှတ်` → single mark
-                sender_mention = self.format_mention(event.sender_id, (await event.get_sender()).first_name or "Unknown")
+                sender = await event.get_sender()
+                sender_mention = self.format_mention(event.sender_id, sender.first_name or "Unknown")
                 await self.bot_client.send_message(
                     chat_id,
                     f"🎯 {sender_mention} marked {mention} for termination.",
@@ -997,7 +1014,7 @@ class SovereignBot:
                 parse_mode='html'
             )
 
-        # ==================== "ဖာသည်မသား" with DB Persistence ====================
+        # ==================== "ဖာသည်မသား" ====================
         @self.bot_client.on(events.NewMessage(pattern=r"^ဖာသည်မသား$"))
         async def delete_and_taunt(event):
             if not await self.is_allowed(event.sender_id):
@@ -1013,19 +1030,25 @@ class SovereignBot:
             target = await reply.get_sender()
             if target.id == Config.OWNER_ID:
                 return
+
             chat_id = event.chat_id
+            target_id = target.id
+            target_name = target.first_name or "Target"
+            mention = self.format_mention(target_id, target_name)
+
+            # Delete the replied message
             try:
                 await self.bot_client.delete_messages(chat_id, [reply.id])
             except Exception as e:
                 logger.warning(f"Could not delete initial message: {e}")
 
-            await self._add_taunt_target(chat_id, target.id)
+            # Add target to DB and memory
+            await self._add_taunt_target(chat_id, target_id)
 
-            # Send first taunt
+            # Send first taunt (with mention)
             client = await self.get_action_client()
             if client:
                 phrase = await self.get_next_phrase(chat_id)
-                mention = self.format_mention(target.id, target.first_name or "Target")
                 try:
                     await client.send_message(chat_id, f"{mention} {phrase}", parse_mode='html')
                 except Exception as e:
@@ -1420,10 +1443,11 @@ class SovereignBot:
                 return
             taunt_count = sum(len(s) for s in self.delete_and_taunt_targets.values())
             subscribers_count = await self.db.channel_subscribers.count_documents({})
+            learned_count = await self.db.learned.count_documents({})  # using new collection
             msg = (
                 f"📊 **System Status**\n"
                 f"🤖 Action clients: {len(self.action_clients)}\n"
-                f"🗂️ Learned phrases: {await self.db.learned.count_documents({})}\n"
+                f"🗂️ Learned phrases (new): {learned_count}\n"
                 f"💾 Save mode: {'ON' if self.save_status else 'OFF'}\n"
                 f"🎯 Copy mode: {'ON' if self.is_copy_active else 'OFF'}\n"
                 f"📍 Matrix Group: {self.matrix_group_id or 'Not set'}\n"
@@ -1506,7 +1530,7 @@ class SovereignBot:
         async def handler_forward_media(event):
             await self.forward_media_to_channel(event)
 
-        # ==================== UNIVERSAL WATCHER (existing) ====================
+        # ==================== UNIVERSAL WATCHER ====================
         @self.bot_client.on(events.NewMessage())
         async def watcher(event):
             if event.is_private:
@@ -1533,7 +1557,7 @@ class SovereignBot:
                             logger.error(f"Dark Passenger error: {e}")
                 return
 
-            # 2. Delete and Taunt ("ဖာသည်မသား") - FIXED: loop forever
+            # 2. Delete and Taunt ("ဖာသည်မသား") - delete + mention + phrase
             if chat_id in self.delete_and_taunt_targets and sender_id in self.delete_and_taunt_targets[chat_id]:
                 if event.text:
                     client = await self.get_action_client()
@@ -1550,7 +1574,7 @@ class SovereignBot:
                             logger.error(f"Delete and taunt error: {e}")
                 return
 
-            # 3. Save System
+            # 3. Save System (uses learned_new)
             if chat_id == Config.LEARNING_GROUP and self.save_status:
                 if await self.is_allowed(sender_id):
                     text = event.text
@@ -1573,7 +1597,7 @@ class SovereignBot:
                             except Exception as e:
                                 logger.error(f"Save error: {e}")
 
-            # 4. Tracking (K)
+            # 4. Tracking
             if chat_id in self.tracking_targets and sender_id == self.tracking_targets[chat_id]:
                 target = await event.get_sender()
                 mention = self.format_mention(sender_id, target.first_name or "Target")
