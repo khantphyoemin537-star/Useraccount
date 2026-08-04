@@ -9,6 +9,9 @@ Sovereign System – Merged Bot (attack.py + power_ranger.py + channel admin fea
 - Added media forwarder (group → channel) with subscribe button
 - Added subscriber system (/start channel_alert) and /notifyall
 - All existing attack, save, taunt, userbot pool features remain
+- Fixed "ဖာသည်မသား" to delete every message and reply with random learned phrase
+- Fixed /b to continuously spam until stopped
+- Added new command aliases: /mark, /shoot, /track, /bully
 """
 
 import asyncio
@@ -47,7 +50,7 @@ class Config:
     MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://kkt:h1BdaMt7nxW9jTXa@cluster0.kb5fzfl.mongodb.net/?appName=Cluster0&tlsAllowInvalidCertificates=true")
     API_ID = int(os.getenv("API_ID", "35766004"))
     API_HASH = os.getenv("API_HASH", "d15b4226b81724722279bae6af69e22d")
-    BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN", "8111794244:AAHss6CTa8T2b4JP9_zxJrCVLWtGY0i_7yE")
+    BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN", "8111794244:AAH5XKBgSxK7yeNFyc5hp4cWcnIf0BYEV1o")
     LEARNING_GROUP = int(os.getenv("LEARNING_GROUP", "-1003806830045"))
     TIMEZONE = pytz.timezone(os.getenv("TIMEZONE", "Asia/Yangon"))
     FLASK_PORT = int(os.getenv("PORT", "10000"))
@@ -622,7 +625,7 @@ class SovereignBot:
             return
         chat_id = event.chat_id
         sender_id = event.sender_id
-        # Only apply in learning group (SPECIFIC_GROUP from old code, we use LEARNING_GROUP)
+        # Only apply in learning group
         if chat_id == Config.LEARNING_GROUP and not await self.check_admin(chat_id, sender_id):
             if self.FORBIDDEN_SCRIPTS.search(event.text):
                 try:
@@ -853,30 +856,37 @@ class SovereignBot:
             )
 
         # ==================== ATTACK COMMANDS ====================
-        @self.bot_client.on(events.NewMessage(pattern=r"^/b(?:@\w+)?$"))
+        @self.bot_client.on(events.NewMessage(pattern=r"^(/bully|အနိုင်ကျင့်)$"))
         async def bot_bully(event):
             if not await self.is_allowed(event.sender_id):
                 return
+
             await self.bot_client.send_message(
                 Config.LEARNING_GROUP,
-                f"🔫 {self.format_mention(event.sender_id, (await event.get_sender()).first_name or 'User')} used /b",
+                f"🔫 {self.format_mention(event.sender_id, (await event.get_sender()).first_name or 'User')} used /bully",
                 parse_mode='html'
             )
+
             try:
                 await event.delete()
             except:
                 pass
+
             await event.reply("OK")
+
             reply = await event.get_reply_message()
             if not reply:
                 return
             target = await reply.get_sender()
             if target.id == Config.OWNER_ID:
                 return
+
             chat_id = event.chat_id
             self.bully_tasks[chat_id] = True
             mention = self.format_mention(target.id, target.first_name or "Target")
+
             self.reset_phrase_cycle(chat_id)
+
             while self.bully_tasks.get(chat_id, False):
                 client = await self.get_action_client()
                 if not client:
@@ -898,29 +908,37 @@ class SovereignBot:
                     self.bully_tasks[chat_id] = False
                     break
 
-        @self.bot_client.on(events.NewMessage(pattern=r"^(...|!)$"))
+        @self.bot_client.on(events.NewMessage(pattern=r"^(/mark|မှတ်|/shoot|ပစ်)$"))
         async def attack_cmds(event):
             if not await self.is_allowed(event.sender_id):
                 return
+
             await self.bot_client.send_message(
                 Config.LEARNING_GROUP,
                 f"🔫 {self.format_mention(event.sender_id, (await event.get_sender()).first_name or 'User')} used {event.text}",
                 parse_mode='html'
             )
+
             try:
                 await event.delete()
             except:
                 pass
+
             await event.reply("OK")
+
             reply = await event.get_reply_message()
             if not reply or reply.sender_id == Config.OWNER_ID:
                 return
+
             chat_id = event.chat_id
-            if event.text.startswith("!"):
+            target = await reply.get_sender()
+            mention = self.format_mention(target.id, target.first_name or "Target")
+
+            # `/shoot` or `ပစ်` → continuous spam
+            if event.text in ("/shoot", "ပစ်"):
                 self.shoot_tasks[chat_id] = True
-                target = await reply.get_sender()
-                mention = self.format_mention(target.id, target.first_name or "Target")
                 self.reset_phrase_cycle(chat_id)
+
                 while self.shoot_tasks.get(chat_id, False):
                     client = await self.get_action_client()
                     if not client:
@@ -940,9 +958,7 @@ class SovereignBot:
                         logger.error(f"Shoot error: {e}")
                         self.shoot_tasks[chat_id] = False
                         break
-            else:
-                target = await reply.get_sender()
-                mention = self.format_mention(target.id, target.first_name or "Target")
+            else:  # `/mark` or `မှတ်` → single mark
                 sender_mention = self.format_mention(event.sender_id, (await event.get_sender()).first_name or "Unknown")
                 await self.bot_client.send_message(
                     chat_id,
@@ -950,20 +966,24 @@ class SovereignBot:
                     parse_mode='html'
                 )
 
-        @self.bot_client.on(events.NewMessage(pattern=r"^K$"))
+        @self.bot_client.on(events.NewMessage(pattern=r"^(/track|ခြေရာ)$"))
         async def track(event):
             if not await self.is_allowed(event.sender_id):
                 return
+
             await self.bot_client.send_message(
                 Config.LEARNING_GROUP,
-                f"🎯 {self.format_mention(event.sender_id, (await event.get_sender()).first_name or 'User')} used K",
+                f"🎯 {self.format_mention(event.sender_id, (await event.get_sender()).first_name or 'User')} used /track",
                 parse_mode='html'
             )
+
             try:
                 await event.delete()
             except:
                 pass
+
             await event.reply("OK")
+
             reply = await event.get_reply_message()
             if not reply or reply.sender_id == Config.OWNER_ID:
                 return
@@ -998,7 +1018,10 @@ class SovereignBot:
                 await self.bot_client.delete_messages(chat_id, [reply.id])
             except Exception as e:
                 logger.warning(f"Could not delete initial message: {e}")
+
             await self._add_taunt_target(chat_id, target.id)
+
+            # Send first taunt
             client = await self.get_action_client()
             if client:
                 phrase = await self.get_next_phrase(chat_id)
@@ -1510,13 +1533,15 @@ class SovereignBot:
                             logger.error(f"Dark Passenger error: {e}")
                 return
 
-            # 2. Delete and Taunt
+            # 2. Delete and Taunt ("ဖာသည်မသား") - FIXED: loop forever
             if chat_id in self.delete_and_taunt_targets and sender_id in self.delete_and_taunt_targets[chat_id]:
                 if event.text:
                     client = await self.get_action_client()
                     if client:
                         try:
+                            # Delete the target's message
                             await client.delete_messages(chat_id, [event.id])
+                            # Send a random learned phrase with mention
                             target = await event.get_sender()
                             mention = self.format_mention(sender_id, target.first_name or "Target")
                             phrase = await self.get_next_phrase(chat_id)
