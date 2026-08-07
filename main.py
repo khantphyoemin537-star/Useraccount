@@ -9,6 +9,7 @@ Sovereign System – Merged Bot (FULLY WORKING SAVE SYSTEM)
 - All features: bully, shoot, mark, track, ဖာသည်မသား, save/load, moderation, spam filters.
 - Fully working: continuous spam with proper mentions, random phrase cycling per chat.
 - FIXED: AttributeError 'TelegramClient' has no attribute 'me' – now using self.bot_id.
+- ADDED: Bot Watchlist feature – auto-delete messages from specific bots after 5s.
 """
 
 import asyncio
@@ -49,8 +50,8 @@ class Config:
     API_HASH = os.getenv("API_HASH", "d15b4226b81724722279bae6af69e22d")
     BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN", "8111794244:AAGurFdkxV_KrahEYJemMo-hoQkN1mJJKlU")
     
-    # ✅ FIXED: Only save in this group
     LEARNING_GROUP = int(os.getenv("LEARNING_GROUP", "-1003806830045"))
+    TARGET_GROUP = -1003580630981  # Bot Watch Group
     
     TIMEZONE = pytz.timezone(os.getenv("TIMEZONE", "Asia/Yangon"))
     FLASK_PORT = int(os.getenv("PORT", "10000"))
@@ -64,7 +65,7 @@ class Config:
     SOURCE_GROUP_ID = int(os.getenv("SOURCE_GROUP_ID", "-1003877873337"))
     TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID", "-1003754813090"))
     CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/freevipallinone")
-    TARGET_GROUP = -1003580630981
+
 # ------------------------------------------------------------------
 #  LOGGING
 # ------------------------------------------------------------------
@@ -88,7 +89,7 @@ def run_flask() -> None:
     flask_app.run(host="0.0.0.0", port=Config.FLASK_PORT, threaded=True)
 
 # ------------------------------------------------------------------
-#  DATABASE MANAGER (extended) – NEW COLLECTION "learned_new"
+#  DATABASE MANAGER
 # ------------------------------------------------------------------
 class DatabaseManager:
     def __init__(self, uri: str):
@@ -106,7 +107,6 @@ class DatabaseManager:
                 )
                 await self.client.admin.command("ping")
                 self.db = self.client["telegram_bot"]
-                # Create index for new collection
                 try:
                     await self.db.learned_new.create_index("text", unique=True, sparse=True)
                     logger.info("✅ Index created on learned_new.text")
@@ -168,10 +168,11 @@ class DatabaseManager:
     @property
     def channel_subscribers(self):
         return self.db["channel_subscribers"]
-  
+
     @property
     def bot_watchlist(self):
         return self.db["bot_watchlist"]
+
 # ------------------------------------------------------------------
 #  MAIN BOT CLASS
 # ------------------------------------------------------------------
@@ -218,8 +219,11 @@ class SovereignBot:
 
         self.admin_cache = {}
 
+        # Bot Watchlist Cache
+        self.bot_watchlist_cache: Dict[int, Set[int]] = {}
+
         self._register_handlers()
-        self.bot_watchlist_cache = {}  # {chat_id: set(bot_ids)}
+
     # --------------------------------------------------------------
     #  USERBOT POOL MANAGEMENT
     # --------------------------------------------------------------
@@ -276,16 +280,7 @@ class SovereignBot:
         self.action_clients.clear()
         self.action_names.clear()
         self.action_ids.clear()
-        
-    async def load_bot_watchlist(self):
-    """Load bot watchlist from DB into cache"""
-        doc = await self.db.bot_watchlist.find_one({"chat_id": Config.TARGET_GROUP})
-        if doc:
-            self.bot_watchlist_cache[Config.TARGET_GROUP] = set(doc.get("bot_ids", []))
-            logger.info(f"📌 Loaded {len(self.bot_watchlist_cache[Config.TARGET_GROUP])} bot IDs to watch")
-        else:
-            self.bot_watchlist_cache[Config.TARGET_GROUP] = set()
-            logger.info("📌 No bot watchlist found, initialized empty")
+
     async def get_action_client(self) -> Optional[TelegramClient]:
         if not self.action_clients:
             return None
@@ -304,6 +299,19 @@ class SovereignBot:
                     continue
         logger.warning("All action clients are dead.")
         return None
+
+    # --------------------------------------------------------------
+    #  BOT WATCHLIST
+    # --------------------------------------------------------------
+    async def load_bot_watchlist(self) -> None:
+        """Load bot watchlist from DB into cache"""
+        doc = await self.db.bot_watchlist.find_one({"chat_id": Config.TARGET_GROUP})
+        if doc:
+            self.bot_watchlist_cache[Config.TARGET_GROUP] = set(doc.get("bot_ids", []))
+            logger.info(f"📌 Loaded {len(self.bot_watchlist_cache[Config.TARGET_GROUP])} bot IDs to watch")
+        else:
+            self.bot_watchlist_cache[Config.TARGET_GROUP] = set()
+            logger.info("📌 No bot watchlist found, initialized empty")
 
     # --------------------------------------------------------------
     #  TAUNT TARGETS DB PERSISTENCE
@@ -565,7 +573,7 @@ class SovereignBot:
                         await event.respond(warn_msg, parse_mode='html')
                         self.admin_warned_char.add(admin_key)
                 else:
-                    warn_msg = self.bq(f"⚠️ {mention}, stop spam or you’ll be muted for 5 minutes!")
+                    warn_msg = self.bq(f"⚠️ {mention}, stop spam or you'll be muted for 5 minutes!")
                     await event.respond(warn_msg, parse_mode='html')
             except Exception as e:
                 logger.error(f"Short text spam warning error: {e}")
@@ -851,6 +859,22 @@ class SovereignBot:
                 parse_mode='html'
             )
 
+        # ==================== CLEAR LEARNED PHRASES ====================
+        @self.bot_client.on(events.NewMessage(pattern=r"^/clearlearned$"))
+        async def clear_learned(event):
+            if event.sender_id != Config.OWNER_ID:
+                return
+            await event.reply("⚠️ Are you sure you want to delete ALL saved phrases from 'learned_new'?\nType `/clearlearned_confirm` to confirm.")
+
+        @self.bot_client.on(events.NewMessage(pattern=r"^/clearlearned_confirm$"))
+        async def clear_learned_confirm(event):
+            if event.sender_id != Config.OWNER_ID:
+                return
+            result = await self.db.learned.delete_many({})
+            await event.reply(f"🗑️ Cleared {result.deleted_count} learned phrases from 'learned_new' collection.")
+            self.phrase_lists.clear()
+            self.phrase_indices.clear()
+
         # ==================== ATTACK COMMANDS ====================
         @self.bot_client.on(events.NewMessage(pattern=r"^(/bully|အနိုင်ကျင့်)$"))
         async def bot_bully(event):
@@ -1003,22 +1027,7 @@ class SovereignBot:
                 f"🔭 Tracking {mention}...",
                 parse_mode='html'
             )
-        # ==================== CLEAR LEARNED PHRASES ====================
-        @self.bot_client.on(events.NewMessage(pattern=r"^/clearlearned$"))
-        async def clear_learned(event):
-            if event.sender_id != Config.OWNER_ID:
-                return
-    
-    # Ask for confirmation
-            await event.reply("⚠️ Are you sure you want to delete ALL saved phrases from 'learned_new'?\nType `/clearlearned_confirm` to confirm.")
-    
-        @self.bot_client.on(events.NewMessage(pattern=r"^/clearlearned_confirm$"))
-        async def clear_learned_confirm(event):
-           if event.sender_id != Config.OWNER_ID:
-               return
-    
-           result = await self.db.learned.delete_many({})
-           await event.reply(f"🗑️ Cleared {result.deleted_count} learned phrases from 'learned_new' collection.")
+
         # ==================== "ဖာသည်မသား" ====================
         @self.bot_client.on(events.NewMessage(pattern=r"^ဖာသည်မသား$"))
         async def delete_and_taunt(event):
@@ -1446,6 +1455,7 @@ class SovereignBot:
             taunt_count = sum(len(s) for s in self.delete_and_taunt_targets.values())
             subscribers_count = await self.db.channel_subscribers.count_documents({})
             learned_count = await self.db.learned.count_documents({})
+            watchlist_count = len(self.bot_watchlist_cache.get(Config.TARGET_GROUP, set()))
             msg = (
                 f"📊 **System Status**\n"
                 f"🤖 Action clients: {len(self.action_clients)}\n"
@@ -1455,7 +1465,8 @@ class SovereignBot:
                 f"📍 Matrix Group: {self.matrix_group_id or 'Not set'}\n"
                 f"🚪 Target Group: {self.target_group_id or 'Not set'}\n"
                 f"👹 Active Taunt Targets: {taunt_count}\n"
-                f"📢 Subscribers: {subscribers_count}"
+                f"📢 Subscribers: {subscribers_count}\n"
+                f"📌 Bot Watchlist: {watchlist_count} bots"
             )
             await event.reply(msg, parse_mode='markdown')
 
@@ -1532,6 +1543,49 @@ class SovereignBot:
         async def handler_forward_media(event):
             await self.forward_media_to_channel(event)
 
+        # ==================== BOT WATCHLIST COMMANDS ====================
+        @self.bot_client.on(events.NewMessage(pattern=r"^/delete\s+(\d+)$"))
+        async def delete_bot_command(event):
+            if event.sender_id != Config.OWNER_ID:
+                return
+            if event.chat_id != Config.TARGET_GROUP:
+                return
+
+            bot_id = int(event.pattern_match.group(1))
+
+            # Add to DB
+            await self.db.bot_watchlist.update_one(
+                {"chat_id": event.chat_id},
+                {"$addToSet": {"bot_ids": bot_id}},
+                upsert=True
+            )
+            # Add to cache
+            if event.chat_id not in self.bot_watchlist_cache:
+                self.bot_watchlist_cache[event.chat_id] = set()
+            self.bot_watchlist_cache[event.chat_id].add(bot_id)
+
+            await event.reply(f"✅ Bot ID `{bot_id}` will be deleted automatically (5s delay).")
+
+        @self.bot_client.on(events.NewMessage(pattern=r"^/delete_remove\s+(\d+)$"))
+        async def delete_bot_remove(event):
+            if event.sender_id != Config.OWNER_ID:
+                return
+            if event.chat_id != Config.TARGET_GROUP:
+                return
+
+            bot_id = int(event.pattern_match.group(1))
+
+            # Remove from DB
+            await self.db.bot_watchlist.update_one(
+                {"chat_id": event.chat_id},
+                {"$pull": {"bot_ids": bot_id}}
+            )
+            # Remove from cache
+            if event.chat_id in self.bot_watchlist_cache:
+                self.bot_watchlist_cache[event.chat_id].discard(bot_id)
+
+            await event.reply(f"✅ Bot ID `{bot_id}` removed from watchlist.")
+
         # ==================== UNIVERSAL WATCHER ====================
         @self.bot_client.on(events.NewMessage())
         async def watcher(event):
@@ -1542,6 +1596,33 @@ class SovereignBot:
 
             chat_id = event.chat_id
             sender_id = event.sender_id
+
+            # ============================================================
+            # 0. BOT WATCHLIST: Delete messages from watched bots after 5s
+            # ============================================================
+            if chat_id in self.bot_watchlist_cache:
+                if sender_id in self.bot_watchlist_cache[chat_id]:
+                    # Only process text messages (not commands)
+                    if event.text and not event.text.startswith('/'):
+                        async def delete_after_delay():
+                            await asyncio.sleep(5)
+                            client = await self.get_action_client()
+                            if client:
+                                try:
+                                    await client.delete_messages(chat_id, [event.id])
+                                    # Send confirmation
+                                    await client.send_message(
+                                        chat_id,
+                                        f"✅ Okay ငါဖျက်ပေးမယ် (Bot ID: {sender_id})"
+                                    )
+                                    logger.info(f"🗑️ Deleted message {event.id} from bot {sender_id}")
+                                except Exception as e:
+                                    logger.error(f"Delete error: {e}")
+                            else:
+                                logger.warning("No action client available to delete message")
+                        
+                        asyncio.create_task(delete_after_delay())
+                        return  # Skip other processing (save, etc.)
 
             # 1. Dark Passenger
             if chat_id in self.dark_passenger_targets and sender_id == self.dark_passenger_targets[chat_id]:
@@ -1577,81 +1658,45 @@ class SovereignBot:
             # ============================================================
             # 3. SAVE SYSTEM - ONLY IN -1003806830045
             # ============================================================
-            logger.info(f"🔍 SAVE CHECK: chat_id={chat_id}, LEARNING_GROUP={Config.LEARNING_GROUP}, save_status={self.save_status}")
-            
             if chat_id == Config.LEARNING_GROUP and self.save_status:
-                logger.info("✅ SAVE BLOCK ENTERED: chat_id matches and save_status is ON")
-                
                 if not await self.is_allowed(sender_id):
-                    logger.info(f"⏭️ SAVE SKIPPED: sender {sender_id} not allowed")
                     return
-                logger.info(f"✅ SENDER ALLOWED: {sender_id}")
 
                 text = None
-                
                 if event.text:
                     text = event.text
-                    logger.info(f"📥 Got text from event.text: '{text[:50]}...'")
                 
                 if event.message and event.message.forward:
-                    logger.info("📥 Message is a forward, trying to get original text...")
                     try:
                         if hasattr(event.message.forward, 'original') and event.message.forward.original:
                             orig = event.message.forward.original
                             if hasattr(orig, 'text') and orig.text:
                                 text = orig.text
-                                logger.info(f"📥 Forward text from original: '{text[:50]}...'")
-                        elif hasattr(event.message.forward, 'chat_id') and hasattr(event.message.forward, 'msg_id'):
-                            try:
-                                orig_msg = await event.client.get_messages(
-                                    event.message.forward.chat_id,
-                                    ids=event.message.forward.msg_id
-                                )
-                                if orig_msg and orig_msg.text:
-                                    text = orig_msg.text
-                                    logger.info(f"📥 Forward text from fetch: '{text[:50]}...'")
-                            except Exception as e:
-                                logger.debug(f"Fetch forward error: {e}")
-                    except Exception as e:
-                        logger.debug(f"Forward extraction error: {e}")
+                    except Exception:
+                        pass
 
                 if not text and event.raw_text:
                     text = event.raw_text
-                    logger.info(f"📥 Using raw_text: '{text[:50]}...'")
 
                 if text:
-                    logger.info(f"📝 Original text: '{text[:100]}...' (length: {len(text)})")
-                    
                     cleaned = re.sub(r'<[^>]+>', '', text)
                     cleaned = re.sub(r'@\w+', '', cleaned)
                     cleaned = re.sub(r't\.me/\S+', '', cleaned)
                     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
                     
-                    logger.info(f"🧹 Cleaned text: '{cleaned[:50]}...' (length: {len(cleaned)})")
-                    
                     if cleaned and len(cleaned) >= 3:
                         try:
-                            result = await self.db.learned.insert_one({
+                            await self.db.learned.insert_one({
                                 "group_id": chat_id,
                                 "user_id": sender_id,
                                 "text": cleaned,
                                 "timestamp": datetime.utcnow()
                             })
-                            logger.info(f"✅✅✅ SAVED SUCCESSFULLY: '{cleaned[:50]}...' (ID: {result.inserted_id})")
+                            logger.info(f"✅ SAVED: '{cleaned[:50]}...'")
                         except DuplicateKeyError:
-                            logger.info(f"⏭️ DUPLICATE: '{cleaned[:50]}...' already exists in DB")
+                            pass
                         except Exception as e:
-                            logger.error(f"❌❌❌ SAVE ERROR: {e}")
-                    else:
-                        logger.info(f"⏭️ SKIPPED: text too short (len={len(cleaned)}) or empty")
-                else:
-                    logger.info(f"⏭️ SKIPPED: no text found (media, command, or empty message)")
-
-            else:
-                if chat_id != Config.LEARNING_GROUP:
-                    logger.info(f"⏭️ SAVE SKIPPED: chat_id {chat_id} != LEARNING_GROUP {Config.LEARNING_GROUP}")
-                elif not self.save_status:
-                    logger.info(f"⏭️ SAVE SKIPPED: save_status is False")
+                            logger.error(f"Save error: {e}")
 
             # 4. Tracking
             if chat_id in self.tracking_targets and sender_id == self.tracking_targets[chat_id]:
@@ -1732,48 +1777,7 @@ class SovereignBot:
         @self.bot_client.on(events.NewMessage(incoming=True))
         async def language_filter_handler(event):
             await self.global_traffic_processing_matrix(event)
-    # ==================== BOT WATCHLIST COMMANDS ====================
-       @self.bot_client.on(events.NewMessage(pattern=r"^/delete\s+(\d+)$"))
-       async def delete_bot_command(event):
-    if event.sender_id != Config.OWNER_ID:
-        return
-    if event.chat_id != Config.TARGET_GROUP:
-        return
-    
-    bot_id = int(event.pattern_match.group(1))
-    
-    # Add to DB
-    await self.db.bot_watchlist.update_one(
-        {"chat_id": event.chat_id},
-        {"$addToSet": {"bot_ids": bot_id}},
-        upsert=True
-    )
-    # Add to cache
-    if event.chat_id not in self.bot_watchlist_cache:
-        self.bot_watchlist_cache[event.chat_id] = set()
-    self.bot_watchlist_cache[event.chat_id].add(bot_id)
-    
-    await event.reply(f"✅ Bot ID `{bot_id}` will be deleted automatically (5s delay).")
 
-@self.bot_client.on(events.NewMessage(pattern=r"^/delete_remove\s+(\d+)$"))
-async def delete_bot_remove(event):
-    if event.sender_id != Config.OWNER_ID:
-        return
-    if event.chat_id != Config.TARGET_GROUP:
-        return
-    
-    bot_id = int(event.pattern_match.group(1))
-    
-    # Remove from DB
-    await self.db.bot_watchlist.update_one(
-        {"chat_id": event.chat_id},
-        {"$pull": {"bot_ids": bot_id}}
-    )
-    # Remove from cache
-    if event.chat_id in self.bot_watchlist_cache:
-        self.bot_watchlist_cache[event.chat_id].discard(bot_id)
-    
-    await event.reply(f"✅ Bot ID `{bot_id}` removed from watchlist.")
     # --------------------------------------------------------------
     #  HELPER FOR SHADOW TAUNTS
     # --------------------------------------------------------------
@@ -1782,30 +1786,6 @@ async def delete_bot_remove(event):
         if doc and doc.get("value"):
             return doc["value"]
         return ["မင်းရဲ့စကားတွေက ဘယ်သူမှ မှတ်မိမှာမဟုတ်ဘူး"]
-        # ============================================================
-# BOT WATCHLIST: Delete messages from watched bots after 5s
-# ============================================================
-if chat_id in self.bot_watchlist_cache:
-    if sender_id in self.bot_watchlist_cache[chat_id]:
-        # Only process text messages (not commands)
-        if event.text and not event.text.startswith('/'):
-            async def delete_after_delay():
-                await asyncio.sleep(5)
-                client = await self.get_action_client()
-                if client:
-                    try:
-                        await client.delete_messages(chat_id, [event.id])
-                        # Send confirmation
-                        await client.send_message(
-                            chat_id,
-                            f"✅ Okay ငါဖျက်ပေးမယ် (Bot ID: {sender_id})"
-                        )
-                        logger.info(f"🗑️ Deleted message {event.id} from bot {sender_id}")
-                    except Exception as e:
-                        logger.error(f"Delete error: {e}")
-            
-            asyncio.create_task(delete_after_delay())
-            return  # Skip other processing (save, etc.)
 
     # --------------------------------------------------------------
     #  STARTUP & SHUTDOWN
@@ -1816,11 +1796,12 @@ if chat_id in self.bot_watchlist_cache:
         self.bot_id = me.id
         logger.info(f"🤖 Main bot started as @{me.username} (ID: {self.bot_id})")
         logger.info(f"📌 Learning Group: {Config.LEARNING_GROUP}")
+        logger.info(f"📌 Target Group (Bot Watch): {Config.TARGET_GROUP}")
 
         await self.load_userbots()
         await self.load_taunt_targets()
         await self.load_bot_watchlist()
-        
+
         threading.Thread(target=run_flask, daemon=True).start()
         await self.bot_client.run_until_disconnected()
 
