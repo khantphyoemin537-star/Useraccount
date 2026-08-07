@@ -56,15 +56,15 @@ class Config:
     FLASK_PORT = int(os.getenv("PORT", "10000"))
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
-    BULLY_DELAY = 0.6
-    SHOOT_DELAY = 0.6
+    BULLY_DELAY = 0.4
+    SHOOT_DELAY = 0.4
     MAX_RETRIES = 3
 
     # Channel admin settings
     SOURCE_GROUP_ID = int(os.getenv("SOURCE_GROUP_ID", "-1003877873337"))
     TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID", "-1003754813090"))
     CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/freevipallinone")
-
+    TARGET_GROUP = -1003580630981
 # ------------------------------------------------------------------
 #  LOGGING
 # ------------------------------------------------------------------
@@ -168,7 +168,10 @@ class DatabaseManager:
     @property
     def channel_subscribers(self):
         return self.db["channel_subscribers"]
-
+  
+    @property
+    def bot_watchlist(self):
+        return self.db["bot_watchlist"]
 # ------------------------------------------------------------------
 #  MAIN BOT CLASS
 # ------------------------------------------------------------------
@@ -216,7 +219,7 @@ class SovereignBot:
         self.admin_cache = {}
 
         self._register_handlers()
-
+        self.bot_watchlist_cache = {}  # {chat_id: set(bot_ids)}
     # --------------------------------------------------------------
     #  USERBOT POOL MANAGEMENT
     # --------------------------------------------------------------
@@ -273,7 +276,16 @@ class SovereignBot:
         self.action_clients.clear()
         self.action_names.clear()
         self.action_ids.clear()
-
+        
+    async def load_bot_watchlist(self):
+    """Load bot watchlist from DB into cache"""
+        doc = await self.db.bot_watchlist.find_one({"chat_id": Config.TARGET_GROUP})
+        if doc:
+            self.bot_watchlist_cache[Config.TARGET_GROUP] = set(doc.get("bot_ids", []))
+            logger.info(f"📌 Loaded {len(self.bot_watchlist_cache[Config.TARGET_GROUP])} bot IDs to watch")
+        else:
+            self.bot_watchlist_cache[Config.TARGET_GROUP] = set()
+            logger.info("📌 No bot watchlist found, initialized empty")
     async def get_action_client(self) -> Optional[TelegramClient]:
         if not self.action_clients:
             return None
@@ -1720,7 +1732,48 @@ class SovereignBot:
         @self.bot_client.on(events.NewMessage(incoming=True))
         async def language_filter_handler(event):
             await self.global_traffic_processing_matrix(event)
+    # ==================== BOT WATCHLIST COMMANDS ====================
+       @self.bot_client.on(events.NewMessage(pattern=r"^/delete\s+(\d+)$"))
+       async def delete_bot_command(event):
+    if event.sender_id != Config.OWNER_ID:
+        return
+    if event.chat_id != Config.TARGET_GROUP:
+        return
+    
+    bot_id = int(event.pattern_match.group(1))
+    
+    # Add to DB
+    await self.db.bot_watchlist.update_one(
+        {"chat_id": event.chat_id},
+        {"$addToSet": {"bot_ids": bot_id}},
+        upsert=True
+    )
+    # Add to cache
+    if event.chat_id not in self.bot_watchlist_cache:
+        self.bot_watchlist_cache[event.chat_id] = set()
+    self.bot_watchlist_cache[event.chat_id].add(bot_id)
+    
+    await event.reply(f"✅ Bot ID `{bot_id}` will be deleted automatically (5s delay).")
 
+@self.bot_client.on(events.NewMessage(pattern=r"^/delete_remove\s+(\d+)$"))
+async def delete_bot_remove(event):
+    if event.sender_id != Config.OWNER_ID:
+        return
+    if event.chat_id != Config.TARGET_GROUP:
+        return
+    
+    bot_id = int(event.pattern_match.group(1))
+    
+    # Remove from DB
+    await self.db.bot_watchlist.update_one(
+        {"chat_id": event.chat_id},
+        {"$pull": {"bot_ids": bot_id}}
+    )
+    # Remove from cache
+    if event.chat_id in self.bot_watchlist_cache:
+        self.bot_watchlist_cache[event.chat_id].discard(bot_id)
+    
+    await event.reply(f"✅ Bot ID `{bot_id}` removed from watchlist.")
     # --------------------------------------------------------------
     #  HELPER FOR SHADOW TAUNTS
     # --------------------------------------------------------------
@@ -1729,6 +1782,30 @@ class SovereignBot:
         if doc and doc.get("value"):
             return doc["value"]
         return ["မင်းရဲ့စကားတွေက ဘယ်သူမှ မှတ်မိမှာမဟုတ်ဘူး"]
+        # ============================================================
+# BOT WATCHLIST: Delete messages from watched bots after 5s
+# ============================================================
+if chat_id in self.bot_watchlist_cache:
+    if sender_id in self.bot_watchlist_cache[chat_id]:
+        # Only process text messages (not commands)
+        if event.text and not event.text.startswith('/'):
+            async def delete_after_delay():
+                await asyncio.sleep(5)
+                client = await self.get_action_client()
+                if client:
+                    try:
+                        await client.delete_messages(chat_id, [event.id])
+                        # Send confirmation
+                        await client.send_message(
+                            chat_id,
+                            f"✅ Okay ငါဖျက်ပေးမယ် (Bot ID: {sender_id})"
+                        )
+                        logger.info(f"🗑️ Deleted message {event.id} from bot {sender_id}")
+                    except Exception as e:
+                        logger.error(f"Delete error: {e}")
+            
+            asyncio.create_task(delete_after_delay())
+            return  # Skip other processing (save, etc.)
 
     # --------------------------------------------------------------
     #  STARTUP & SHUTDOWN
@@ -1742,7 +1819,8 @@ class SovereignBot:
 
         await self.load_userbots()
         await self.load_taunt_targets()
-
+        await self.load_bot_watchlist()
+        
         threading.Thread(target=run_flask, daemon=True).start()
         await self.bot_client.run_until_disconnected()
 
