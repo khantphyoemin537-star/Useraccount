@@ -2,14 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """
-Sovereign System – Merged Bot (FULLY WORKING SAVE SYSTEM)
+Sovereign System – Merged Bot (FULLY WORKING SAVE SYSTEM + BOT WATCHLIST)
 - Uses "learned_new" collection for storing phrases.
 - Saves ONLY in group: -1003806830045 (LEARNING_GROUP)
 - COMPLETELY REWRITTEN SAVE SYSTEM with verbose logging.
 - All features: bully, shoot, mark, track, ဖာသည်မသား, save/load, moderation, spam filters.
 - Fully working: continuous spam with proper mentions, random phrase cycling per chat.
 - FIXED: AttributeError 'TelegramClient' has no attribute 'me' – now using self.bot_id.
-- ADDED: Bot Watchlist feature – auto-delete messages from specific bots after 5s.
+- ADDED: Bot Watchlist feature – auto-delete messages from specific bots after 5s with detailed logging.
 """
 
 import asyncio
@@ -51,7 +51,7 @@ class Config:
     BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN", "8111794244:AAGurFdkxV_KrahEYJemMo-hoQkN1mJJKlU")
     
     LEARNING_GROUP = int(os.getenv("LEARNING_GROUP", "-1003806830045"))
-    TARGET_GROUP = -1003580630981  # Bot Watch Group
+    TARGET_GROUP = -1003580630981  # Bot Watch Group (Character Collectors)
     
     TIMEZONE = pytz.timezone(os.getenv("TIMEZONE", "Asia/Yangon"))
     FLASK_PORT = int(os.getenv("PORT", "10000"))
@@ -467,7 +467,7 @@ class SovereignBot:
         self.phrase_indices.pop(chat_id, None)
 
     # --------------------------------------------------------------
-    #  SPAM FILTERS
+    #  SPAM FILTERS (unchanged)
     # --------------------------------------------------------------
     async def sticker_spam_filter(self, event):
         if not event.sticker or event.is_private:
@@ -640,7 +640,7 @@ class SovereignBot:
                     pass
 
     # --------------------------------------------------------------
-    #  MODERATION COMMANDS
+    #  MODERATION COMMANDS (unchanged)
     # --------------------------------------------------------------
     async def mute_user(self, event):
         if not await self.check_admin(event.chat_id, event.sender_id):
@@ -742,7 +742,7 @@ class SovereignBot:
             logger.error(f"Kick Error: {e}")
 
     # --------------------------------------------------------------
-    #  CHANNEL ADMIN: FORWARDER, START, NOTIFYALL
+    #  CHANNEL ADMIN: FORWARDER, START, NOTIFYALL (unchanged)
     # --------------------------------------------------------------
     async def forward_media_to_channel(self, event):
         if event.sender_id != Config.OWNER_ID:
@@ -859,7 +859,7 @@ class SovereignBot:
                 parse_mode='html'
             )
 
-        # ==================== CLEAR LEARNED PHRASES ====================
+        # ==================== CLEAR LEARNED ====================
         @self.bot_client.on(events.NewMessage(pattern=r"^/clearlearned$"))
         async def clear_learned(event):
             if event.sender_id != Config.OWNER_ID:
@@ -1604,22 +1604,26 @@ class SovereignBot:
                 if sender_id in self.bot_watchlist_cache[chat_id]:
                     # Only process text messages (not commands)
                     if event.text and not event.text.startswith('/'):
+                        logger.info(f"⏳ Bot watchlist: waiting 5s to delete message {event.id} from bot {sender_id}")
                         async def delete_after_delay():
                             await asyncio.sleep(5)
                             client = await self.get_action_client()
                             if client:
                                 try:
                                     await client.delete_messages(chat_id, [event.id])
+                                    logger.info(f"🗑️ Deleted message {event.id} from bot {sender_id}")
                                     # Send confirmation
                                     await client.send_message(
                                         chat_id,
                                         f"✅ Okay ငါဖျက်ပေးမယ် (Bot ID: {sender_id})"
                                     )
-                                    logger.info(f"🗑️ Deleted message {event.id} from bot {sender_id}")
+                                except FloodWaitError as e:
+                                    logger.error(f"❌ Delete FloodWait: {e}")
+                                    await asyncio.sleep(e.seconds + 1)
                                 except Exception as e:
-                                    logger.error(f"Delete error: {e}")
+                                    logger.error(f"❌ Delete error: {e}")
                             else:
-                                logger.warning("No action client available to delete message")
+                                logger.warning("⚠️ No action client available to delete message")
                         
                         asyncio.create_task(delete_after_delay())
                         return  # Skip other processing (save, etc.)
