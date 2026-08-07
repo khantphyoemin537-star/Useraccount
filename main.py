@@ -9,7 +9,9 @@ Sovereign System – Merged Bot (FULLY WORKING SAVE SYSTEM + BOT WATCHLIST)
 - All features: bully, shoot, mark, track, ဖာသည်မသား, save/load, moderation, spam filters.
 - Fully working: continuous spam with proper mentions, random phrase cycling per chat.
 - FIXED: AttributeError 'TelegramClient' has no attribute 'me' – now using self.bot_id.
-- ADDED: Bot Watchlist feature – auto-delete messages from specific bots after 5s with detailed logging.
+- ADDED: Bot Watchlist feature – auto-delete messages (including media) from specific bots after 5s.
+- FIXED: Media messages (photos, videos, stickers, etc.) are now deleted as well.
+- ADDED: Fallback to main bot if no action client available.
 """
 
 import asyncio
@@ -1602,20 +1604,30 @@ class SovereignBot:
             # ============================================================
             if chat_id in self.bot_watchlist_cache:
                 if sender_id in self.bot_watchlist_cache[chat_id]:
-                    # Only process text messages (not commands)
-                    if event.text and not event.text.startswith('/'):
+                    # ✅ FIX: Check for commands – skip only if it's a command
+                    is_command = bool(event.text and event.text.startswith('/'))
+                    
+                    if not is_command:
                         logger.info(f"⏳ Bot watchlist: waiting 5s to delete message {event.id} from bot {sender_id}")
-                        async def delete_after_delay():
+                        
+                        # ✅ FIX: Pass all needed values to avoid closure issues
+                        async def delete_after_delay(msg_id, t_chat_id, target_sender_id):
                             await asyncio.sleep(5)
+                            
+                            # Try to get an action client (Power Ranger)
                             client = await self.get_action_client()
-                            if client:
+                            
+                            # ✅ FALLBACK: If no action client, use main bot
+                            deleter = client if client else self.bot_client
+                            
+                            if deleter:
                                 try:
-                                    await client.delete_messages(chat_id, [event.id])
-                                    logger.info(f"🗑️ Deleted message {event.id} from bot {sender_id}")
+                                    await deleter.delete_messages(t_chat_id, [msg_id])
+                                    logger.info(f"🗑️ Deleted message {msg_id} from bot {target_sender_id}")
                                     # Send confirmation
-                                    await client.send_message(
-                                        chat_id,
-                                        f"✅ Okay ငါဖျက်ပေးမယ် (Bot ID: {sender_id})"
+                                    await deleter.send_message(
+                                        t_chat_id,
+                                        f"✅ Okay ငါဖျက်ပေးမယ် (Bot ID: {target_sender_id})"
                                     )
                                 except FloodWaitError as e:
                                     logger.error(f"❌ Delete FloodWait: {e}")
@@ -1625,7 +1637,8 @@ class SovereignBot:
                             else:
                                 logger.warning("⚠️ No action client available to delete message")
                         
-                        asyncio.create_task(delete_after_delay())
+                        # ✅ FIX: Pass event.id, chat_id, sender_id as parameters
+                        asyncio.create_task(delete_after_delay(event.id, chat_id, sender_id))
                         return  # Skip other processing (save, etc.)
 
             # 1. Dark Passenger
