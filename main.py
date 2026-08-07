@@ -1602,6 +1602,8 @@ class SovereignBot:
             # ============================================================
             # 0. BOT WATCHLIST: Delete messages from watched bots after 5s
             # ============================================================
+            logger.info(f"🔍 WATCHER: chat_id={chat_id}, sender_id={sender_id}")
+            logger.info(f"🔍 Watchlist cache: {self.bot_watchlist_cache}")
             if chat_id in self.bot_watchlist_cache:
                 if sender_id in self.bot_watchlist_cache[chat_id]:
                     # ✅ FIX: Check for commands – skip only if it's a command
@@ -1640,6 +1642,12 @@ class SovereignBot:
                         # ✅ FIX: Pass event.id, chat_id, sender_id as parameters
                         asyncio.create_task(delete_after_delay(event.id, chat_id, sender_id))
                         return  # Skip other processing (save, etc.)
+                    else:
+                        logger.info(f"⏭️ Skipping: message is command")
+                else:
+                    logger.info(f"⏭️ Sender {sender_id} NOT in watchlist")
+            else:
+                logger.info(f"⏭️ Chat {chat_id} NOT in watchlist")    
 
             # 1. Dark Passenger
             if chat_id in self.dark_passenger_targets and sender_id == self.dark_passenger_targets[chat_id]:
