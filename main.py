@@ -1311,8 +1311,6 @@ class SovereignBot:
             else:
                 await event.reply(f"✅ Removed from DB.")
 
- 
-
         # ==================== COPY MODE ====================
         @self.bot_client.on(events.NewMessage(pattern=r"^/copyon$"))
         async def copyon(event):
@@ -1394,128 +1392,8 @@ class SovereignBot:
                         await event.reply(f"⚠️ Joined but could not determine group ID. Use /setmatrix manually.")
                 except Exception as e2:
                     await event.reply(f"⚠️ Joined but failed to get ID: {e2}")
-        @self.bot_client.on(events.NewMessage(pattern=r"^/savetalk(?:\s+(.+))?$"))
-async def savetalk(event):
-    if event.sender_id != Config.OWNER_ID:
-        return
 
-    link = event.pattern_match.group(1)
-    if not link and event.is_reply:
-        reply = await event.get_reply_message()
-        if reply and reply.text:
-            link = reply.text.strip()
-
-    if not link:
-        await event.reply("❌ Usage: `/savetalk <group_link>` or reply to a message containing the link.")
-        return
-
-    # Extract hash from link
-    link_match = re.search(r'(https?://t\.me/(joinchat/|\+)[A-Za-z0-9_-]+)', link)
-    if not link_match:
-        await event.reply("❌ Invalid invite link.")
-        return
-    invite_link = link_match.group(0)
-    if 'joinchat/' in invite_link:
-        hash_part = invite_link.split('joinchat/')[1].split('?')[0]
-    elif '+' in invite_link:
-        hash_part = invite_link.split('+')[1].split('?')[0]
-    else:
-        await event.reply("❌ Could not parse hash.")
-        return
-
-    all_clients = self.action_clients.copy()
-    if not all_clients:
-        await event.reply("❌ No action clients. Add a Power Ranger first.")
-        return
-
-    # Try to get the group entity first (maybe already joined)
-    group_id = None
-    group_title = None
-    for client in all_clients:
-        try:
-            chat = await client.get_entity(invite_link)
-            group_id = chat.id
-            group_title = chat.title
-            logger.info(f"✅ Already in group: {group_title} (ID: {group_id}) with client")
-            break
-        except Exception:
-            continue
-
-    # If not already joined, try to join with each client
-    if group_id is None:
-        joined = 0
-        for client in all_clients:
-            try:
-                await client(ImportChatInviteRequest(hash_part))
-                joined += 1
-            except errors.rpcerrorlist.UserAlreadyParticipantError:
-                # Already a member, count as success
-                joined += 1
-            except Exception as e:
-                logger.warning(f"Join error for a client: {e}")
-            await asyncio.sleep(0.3)
-
-        if joined == 0:
-            await event.reply("❌ Could not join the group with any client.")
-            return
-
-        # Get group entity after joining (use first client that joined)
-        for client in all_clients:
-            try:
-                chat = await client.get_entity(invite_link)
-                group_id = chat.id
-                group_title = chat.title
-                break
-            except Exception:
-                continue
-
-        if group_id is None:
-            await event.reply("❌ Joined but couldn't fetch group info. Try again.")
-            return
-
-    # Now fetch messages from the group (text only, up to 10000)
-    await event.reply(f"✅ Joined/Found `{group_title}` (ID: {group_id}). Now saving up to 10000 messages...")
-
-    saved = 0
-    try:
-        # Use the first client that can access the group
-        for client in all_clients:
-            try:
-                # Test if we can get messages
-                async for msg in client.iter_messages(group_id, limit=1):
-                    break
-                # If we get here, we can use this client
-                break
-            except Exception:
-                continue
-        else:
-            await event.reply("❌ No client can read messages in the group.")
-            return
-
-        async for msg in client.iter_messages(group_id, limit=10000):
-            if msg.text and not msg.text.startswith('/'):
-                text = msg.text.strip()
-                if text:
-                    try:
-                        await self.db.talk_phrases.update_one(
-                            {"group_id": group_id, "text": text},
-                            {"$set": {"group_id": group_id, "text": text}},
-                            upsert=True
-                        )
-                        saved += 1
-                    except DuplicateKeyError:
-                        pass
-                    except Exception as e:
-                        logger.error(f"Talk save error: {e}")
-            if saved % 100 == 0:
-                await asyncio.sleep(0.1)
-    except Exception as e:
-        await event.reply(f"⚠️ Error while fetching messages: {e}")
-        return
-
-    await event.reply(f"✅ Saved {saved} unique phrases from `{group_title}` (ID: {group_id}).\n"
-                      f"Use `/talk {group_id}` to start talking with these phrases in a chat.")
-
+        # ==================== /setmatrix ====================
         @self.bot_client.on(events.NewMessage(pattern=r"^/setmatrix$"))
         async def set_matrix(event):
             if event.sender_id != Config.OWNER_ID:
@@ -1543,7 +1421,6 @@ async def savetalk(event):
             except Exception as e:
                 await event.reply(f"❌ Failed to resolve: {e}")
 
-        
         # ==================== STATUS COMMAND ====================
         @self.bot_client.on(events.NewMessage(pattern=r"^/status$"))
         async def status_cmd(event):
@@ -1693,7 +1570,6 @@ async def savetalk(event):
             if event.sender_id != Config.OWNER_ID:
                 return
 
-            # Expect a group link in the command or in reply
             link = event.pattern_match.group(1)
             if not link and event.is_reply:
                 reply = await event.get_reply_message()
@@ -1718,44 +1594,77 @@ async def savetalk(event):
                 await event.reply("❌ Could not parse hash.")
                 return
 
-            # Join with all action clients
             all_clients = self.action_clients.copy()
             if not all_clients:
                 await event.reply("❌ No action clients. Add a Power Ranger first.")
                 return
 
-            joined = 0
+            # Try to get the group entity first (maybe already joined)
+            group_id = None
+            group_title = None
             for client in all_clients:
                 try:
-                    await client(ImportChatInviteRequest(hash_part))
-                    joined += 1
+                    chat = await client.get_entity(invite_link)
+                    group_id = chat.id
+                    group_title = chat.title
+                    logger.info(f"✅ Already in group: {group_title} (ID: {group_id}) with client")
+                    break
                 except Exception:
-                    pass
-                await asyncio.sleep(0.3)
+                    continue
 
-            if joined == 0:
-                await event.reply("❌ Could not join the group with any client.")
-                return
+            # If not already joined, try to join with each client
+            if group_id is None:
+                joined = 0
+                for client in all_clients:
+                    try:
+                        await client(ImportChatInviteRequest(hash_part))
+                        joined += 1
+                    except errors.rpcerrorlist.UserAlreadyParticipantError:
+                        joined += 1
+                    except Exception as e:
+                        logger.warning(f"Join error for a client: {e}")
+                    await asyncio.sleep(0.3)
 
-            # Get group entity
-            try:
-                chat = await all_clients[0].get_entity(invite_link)
-                group_id = chat.id
-                group_title = chat.title
-            except Exception:
-                await event.reply("❌ Joined but couldn't fetch group info. Try again.")
-                return
+                if joined == 0:
+                    await event.reply("❌ Could not join the group with any client.")
+                    return
 
-            await event.reply(f"✅ Joined `{group_title}` with {joined} clients. Now saving up to 10000 messages...")
+                # Get group entity after joining
+                for client in all_clients:
+                    try:
+                        chat = await client.get_entity(invite_link)
+                        group_id = chat.id
+                        group_title = chat.title
+                        break
+                    except Exception:
+                        continue
 
-            # Fetch messages from the group (text only, up to 10000)
+                if group_id is None:
+                    await event.reply("❌ Joined but couldn't fetch group info. Try again.")
+                    return
+
+            await event.reply(f"✅ Joined/Found `{group_title}` (ID: {group_id}). Now saving up to 10000 messages...")
+
             saved = 0
             try:
-                async for msg in all_clients[0].iter_messages(group_id, limit=10000):
+                # Use the first client that can access the group
+                client_to_use = None
+                for client in all_clients:
+                    try:
+                        async for msg in client.iter_messages(group_id, limit=1):
+                            break
+                        client_to_use = client
+                        break
+                    except Exception:
+                        continue
+                if client_to_use is None:
+                    await event.reply("❌ No client can read messages in the group.")
+                    return
+
+                async for msg in client_to_use.iter_messages(group_id, limit=10000):
                     if msg.text and not msg.text.startswith('/'):
                         text = msg.text.strip()
                         if text:
-                            # Save to DB (avoid duplicates by group_id + text)
                             try:
                                 await self.db.talk_phrases.update_one(
                                     {"group_id": group_id, "text": text},
@@ -1767,7 +1676,6 @@ async def savetalk(event):
                                 pass
                             except Exception as e:
                                 logger.error(f"Talk save error: {e}")
-                    # Optionally sleep to avoid flood
                     if saved % 100 == 0:
                         await asyncio.sleep(0.1)
             except Exception as e:
