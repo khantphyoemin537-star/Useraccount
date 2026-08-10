@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Sovereign System – Merged Bot (FULLY WORKING SAVE SYSTEM + BOT WATCHLIST)
+Sovereign System – Merged Bot (FULLY WORKING SAVE SYSTEM + BOT WATCHLIST + RANDOM TALK)
 - Uses "learned_new" collection for storing phrases.
 - Saves ONLY in group: -1003806830045 (LEARNING_GROUP)
 - COMPLETELY REWRITTEN SAVE SYSTEM with verbose logging.
@@ -12,6 +12,8 @@ Sovereign System – Merged Bot (FULLY WORKING SAVE SYSTEM + BOT WATCHLIST)
 - ADDED: Bot Watchlist feature – auto-delete messages (including media) from specific bots after 5s.
 - FIXED: Media messages (photos, videos, stickers, etc.) are now deleted as well.
 - ADDED: Fallback to main bot if no action client available.
+- FIXED: Bully/Shoot loops no longer stop on RPC errors – they continue with another client.
+- NEW: Random Talk – save messages from a group (up to 10000) and start continuous talking.
 """
 
 import asyncio
@@ -61,6 +63,7 @@ class Config:
 
     BULLY_DELAY = 0.4
     SHOOT_DELAY = 0.4
+    TALK_DELAY = 0.5      # NEW: delay between random talk messages (seconds)
     MAX_RETRIES = 3
 
     # Channel admin settings
@@ -114,6 +117,12 @@ class DatabaseManager:
                     logger.info("✅ Index created on learned_new.text")
                 except Exception as e:
                     logger.warning(f"Index creation warning: {e}")
+                # NEW: index for talk_phrases
+                try:
+                    await self.db.talk_phrases.create_index([("group_id", 1), ("text", 1)], unique=True, sparse=True)
+                    logger.info("✅ Index created on talk_phrases")
+                except Exception as e:
+                    logger.warning(f"Talk phrases index warning: {e}")
                 logger.info("MongoDB connection established.")
                 return
             except (ConnectionFailure, OperationFailure) as e:
@@ -175,6 +184,11 @@ class DatabaseManager:
     def bot_watchlist(self):
         return self.db["bot_watchlist"]
 
+    # NEW: talk phrases collection
+    @property
+    def talk_phrases(self):
+        return self.db["talk_phrases"]
+
 # ------------------------------------------------------------------
 #  MAIN BOT CLASS
 # ------------------------------------------------------------------
@@ -223,6 +237,12 @@ class SovereignBot:
 
         # Bot Watchlist Cache
         self.bot_watchlist_cache: Dict[int, Set[int]] = {}
+
+        # NEW: Random Talk
+        self.talk_tasks: Dict[int, bool] = {}          # chat_id -> running
+        self.talk_phrases_cache: Dict[int, List[str]] = {}  # source_group_id -> list of phrases
+        self.talk_indices: Dict[int, int] = {}         # source_group_id -> index
+        self.talk_source_group: Dict[int, int] = {}    # chat_id -> source_group_id (which phrases to use)
 
         self._register_handlers()
 
@@ -467,6 +487,73 @@ class SovereignBot:
     def reset_phrase_cycle(self, chat_id: int) -> None:
         self.phrase_lists.pop(chat_id, None)
         self.phrase_indices.pop(chat_id, None)
+
+    # --------------------------------------------------------------
+    #  RANDOM TALK – NEW
+    # --------------------------------------------------------------
+    async def fetch_talk_phrases(self, source_group_id: int) -> List[str]:
+        """Fetch saved talk phrases for a given source group."""
+        docs = await self.db.talk_phrases.find({"group_id": source_group_id}).to_list(length=10000)
+        if docs:
+            phrases = [doc.get("text") for doc in docs if doc.get("text")]
+            if phrases:
+                logger.info(f"📚 Fetched {len(phrases)} talk phrases from group {source_group_id}")
+                return phrases
+        return []
+
+    async def get_next_talk_phrase(self, source_group_id: int) -> str:
+        """Return next phrase from cache, cycling."""
+        if source_group_id not in self.talk_phrases_cache:
+            phrases = await self.fetch_talk_phrases(source_group_id)
+            if not phrases:
+                return "စကားလုံးမရှိသေးပါ"
+            random.shuffle(phrases)
+            self.talk_phrases_cache[source_group_id] = phrases
+            self.talk_indices[source_group_id] = 0
+
+        phrases = self.talk_phrases_cache[source_group_id]
+        idx = self.talk_indices.get(source_group_id, 0)
+        phrase = phrases[idx]
+        idx += 1
+        if idx >= len(phrases):
+            random.shuffle(phrases)
+            idx = 0
+        self.talk_indices[source_group_id] = idx
+        return phrase
+
+    async def start_talk_loop(self, chat_id: int, source_group_id: int):
+        """Start continuous random talking in chat_id using phrases from source_group_id."""
+        if chat_id in self.talk_tasks and self.talk_tasks[chat_id]:
+            return  # already running
+
+        self.talk_tasks[chat_id] = True
+        self.talk_source_group[chat_id] = source_group_id
+
+        # Ensure phrases are loaded
+        if source_group_id not in self.talk_phrases_cache:
+            await self.fetch_talk_phrases(source_group_id)
+
+        logger.info(f"🗣️ Starting talk loop in chat {chat_id} using group {source_group_id}")
+
+        async def talk_loop():
+            while self.talk_tasks.get(chat_id, False):
+                client = await self.get_action_client()
+                if not client:
+                    await asyncio.sleep(1)
+                    continue
+                phrase = await self.get_next_talk_phrase(source_group_id)
+                try:
+                    await client.send_message(chat_id, phrase)
+                    await asyncio.sleep(Config.TALK_DELAY)
+                except FloodWaitError as e:
+                    await asyncio.sleep(e.seconds + 1)
+                except Exception as e:
+                    logger.error(f"Talk loop error in chat {chat_id}: {e}")
+                    # Continue; if error is persistent, the loop will try again with a new client
+                    await asyncio.sleep(2)
+            logger.info(f"🛑 Talk loop stopped in chat {chat_id}")
+
+        asyncio.create_task(talk_loop())
 
     # --------------------------------------------------------------
     #  SPAM FILTERS (unchanged)
@@ -929,9 +1016,11 @@ class SovereignBot:
                     except FloodWaitError as e:
                         await asyncio.sleep(e.seconds + 1)
                     except Exception as e:
-                        logger.error(f"Bully error: {e}")
-                        self.bully_tasks[chat_id] = False
-                        break
+                        # FIX: log error and continue, don't stop the loop
+                        logger.error(f"Bully error (client will be rotated): {e}")
+                        await asyncio.sleep(1)  # small delay before retrying
+                        # Continue; the next iteration will get a new client
+                logger.info(f"🛑 Bully loop stopped for chat {chat_id}")
 
             asyncio.create_task(bully_loop())
 
@@ -984,9 +1073,10 @@ class SovereignBot:
                         except FloodWaitError as e:
                             await asyncio.sleep(e.seconds + 1)
                         except Exception as e:
-                            logger.error(f"Shoot error: {e}")
-                            self.shoot_tasks[chat_id] = False
-                            break
+                            # FIX: log and continue
+                            logger.error(f"Shoot error (client will be rotated): {e}")
+                            await asyncio.sleep(1)
+                    logger.info(f"🛑 Shoot loop stopped for chat {chat_id}")
 
                 asyncio.create_task(shoot_loop())
 
@@ -1129,9 +1219,12 @@ class SovereignBot:
             if chat_id in self.dark_passenger_targets:
                 del self.dark_passenger_targets[chat_id]
                 stopped = True
+            if chat_id in self.talk_tasks:
+                self.talk_tasks[chat_id] = False
+                stopped = True
             self.reset_phrase_cycle(chat_id)
             if stopped:
-                await event.reply("🛑 Active attacks (bully/shoot/track) stopped in this chat. (Taunt targets remain active until removed with /remove_taunt or /clear_taunts)")
+                await event.reply("🛑 Active attacks (bully/shoot/track/talk) stopped in this chat. (Taunt targets remain active until removed with /remove_taunt or /clear_taunts)")
             else:
                 await event.reply("ℹ️ No active attacks to stop in this chat.")
 
@@ -1458,6 +1551,8 @@ class SovereignBot:
             subscribers_count = await self.db.channel_subscribers.count_documents({})
             learned_count = await self.db.learned.count_documents({})
             watchlist_count = len(self.bot_watchlist_cache.get(Config.TARGET_GROUP, set()))
+            talk_phrases_count = await self.db.talk_phrases.count_documents({})
+            active_talk = len([c for c, running in self.talk_tasks.items() if running])
             msg = (
                 f"📊 **System Status**\n"
                 f"🤖 Action clients: {len(self.action_clients)}\n"
@@ -1468,7 +1563,9 @@ class SovereignBot:
                 f"🚪 Target Group: {self.target_group_id or 'Not set'}\n"
                 f"👹 Active Taunt Targets: {taunt_count}\n"
                 f"📢 Subscribers: {subscribers_count}\n"
-                f"📌 Bot Watchlist: {watchlist_count} bots"
+                f"📌 Bot Watchlist: {watchlist_count} bots\n"
+                f"🗣️ Talk phrases saved: {talk_phrases_count}\n"
+                f"🗣️ Active talk chats: {active_talk}"
             )
             await event.reply(msg, parse_mode='markdown')
 
@@ -1588,6 +1685,137 @@ class SovereignBot:
 
             await event.reply(f"✅ Bot ID `{bot_id}` removed from watchlist.")
 
+        # ==================== NEW: RANDOM TALK COMMANDS ====================
+        @self.bot_client.on(events.NewMessage(pattern=r"^/savetalk(?:\s+(.+))?$"))
+        async def savetalk(event):
+            if event.sender_id != Config.OWNER_ID:
+                return
+
+            # Expect a group link in the command or in reply
+            link = event.pattern_match.group(1)
+            if not link and event.is_reply:
+                reply = await event.get_reply_message()
+                if reply and reply.text:
+                    link = reply.text.strip()
+
+            if not link:
+                await event.reply("❌ Usage: `/savetalk <group_link>` or reply to a message containing the link.")
+                return
+
+            # Extract hash from link
+            link_match = re.search(r'(https?://t\.me/(joinchat/|\+)[A-Za-z0-9_-]+)', link)
+            if not link_match:
+                await event.reply("❌ Invalid invite link.")
+                return
+            invite_link = link_match.group(0)
+            if 'joinchat/' in invite_link:
+                hash_part = invite_link.split('joinchat/')[1].split('?')[0]
+            elif '+' in invite_link:
+                hash_part = invite_link.split('+')[1].split('?')[0]
+            else:
+                await event.reply("❌ Could not parse hash.")
+                return
+
+            # Join with all action clients
+            all_clients = self.action_clients.copy()
+            if not all_clients:
+                await event.reply("❌ No action clients. Add a Power Ranger first.")
+                return
+
+            joined = 0
+            for client in all_clients:
+                try:
+                    await client(ImportChatInviteRequest(hash_part))
+                    joined += 1
+                except Exception:
+                    pass
+                await asyncio.sleep(0.3)
+
+            if joined == 0:
+                await event.reply("❌ Could not join the group with any client.")
+                return
+
+            # Get group entity
+            try:
+                chat = await all_clients[0].get_entity(invite_link)
+                group_id = chat.id
+                group_title = chat.title
+            except Exception:
+                await event.reply("❌ Joined but couldn't fetch group info. Try again.")
+                return
+
+            await event.reply(f"✅ Joined `{group_title}` with {joined} clients. Now saving up to 10000 messages...")
+
+            # Fetch messages from the group (text only, up to 10000)
+            saved = 0
+            try:
+                async for msg in all_clients[0].iter_messages(group_id, limit=10000):
+                    if msg.text and not msg.text.startswith('/'):
+                        text = msg.text.strip()
+                        if text:
+                            # Save to DB (avoid duplicates by group_id + text)
+                            try:
+                                await self.db.talk_phrases.update_one(
+                                    {"group_id": group_id, "text": text},
+                                    {"$set": {"group_id": group_id, "text": text}},
+                                    upsert=True
+                                )
+                                saved += 1
+                            except DuplicateKeyError:
+                                pass
+                            except Exception as e:
+                                logger.error(f"Talk save error: {e}")
+                    # Optionally sleep to avoid flood
+                    if saved % 100 == 0:
+                        await asyncio.sleep(0.1)
+            except Exception as e:
+                await event.reply(f"⚠️ Error while fetching messages: {e}")
+                return
+
+            await event.reply(f"✅ Saved {saved} unique phrases from `{group_title}` (ID: {group_id}).\n"
+                              f"Use `/talk {group_id}` to start talking with these phrases in a chat.")
+
+        @self.bot_client.on(events.NewMessage(pattern=r"^/talk(?:\s+(-?\d+))?$"))
+        async def talk_command(event):
+            if not await self.is_allowed(event.sender_id):
+                return
+
+            chat_id = event.chat_id
+            source_group_id = event.pattern_match.group(1)
+
+            # If no source group provided, try to use the last saved talk group
+            if not source_group_id:
+                # Find the most recent talk group from DB
+                doc = await self.db.talk_phrases.find_one(sort=[("_id", -1)])
+                if doc:
+                    source_group_id = doc.get("group_id")
+                else:
+                    await event.reply("❌ No talk phrases saved. Use `/savetalk <link>` first.")
+                    return
+            else:
+                source_group_id = int(source_group_id)
+
+            # Check if we have phrases for that group
+            count = await self.db.talk_phrases.count_documents({"group_id": source_group_id})
+            if count == 0:
+                await event.reply(f"❌ No saved phrases for group ID {source_group_id}. Use `/savetalk` first.")
+                return
+
+            # Start talk loop in this chat
+            await self.start_talk_loop(chat_id, source_group_id)
+            await event.reply(f"🗣️ Random talk started in this chat using phrases from group {source_group_id}. (delay {Config.TALK_DELAY}s)")
+
+        @self.bot_client.on(events.NewMessage(pattern=r"^/stoptalk$"))
+        async def stoptalk(event):
+            if not await self.is_allowed(event.sender_id):
+                return
+            chat_id = event.chat_id
+            if chat_id in self.talk_tasks:
+                self.talk_tasks[chat_id] = False
+                await event.reply("🛑 Random talk stopped in this chat.")
+            else:
+                await event.reply("ℹ️ No active talk in this chat.")
+
         # ==================== UNIVERSAL WATCHER ====================
         @self.bot_client.on(events.NewMessage())
         async def watcher(event):
@@ -1602,52 +1830,25 @@ class SovereignBot:
             # ============================================================
             # 0. BOT WATCHLIST: Delete messages from watched bots after 5s
             # ============================================================
-            logger.info(f"🔍 WATCHER: chat_id={chat_id}, sender_id={sender_id}")
-            logger.info(f"🔍 Watchlist cache: {self.bot_watchlist_cache}")
             if chat_id in self.bot_watchlist_cache:
                 if sender_id in self.bot_watchlist_cache[chat_id]:
-                    # ✅ FIX: Check for commands – skip only if it's a command
                     is_command = bool(event.text and event.text.startswith('/'))
-                    
                     if not is_command:
-                        logger.info(f"⏳ Bot watchlist: waiting 5s to delete message {event.id} from bot {sender_id}")
-                        
-                        # ✅ FIX: Pass all needed values to avoid closure issues
                         async def delete_after_delay(msg_id, t_chat_id, target_sender_id):
                             await asyncio.sleep(5)
-                            
-                            # Try to get an action client (Power Ranger)
                             client = await self.get_action_client()
-                            
-                            # ✅ FALLBACK: If no action client, use main bot
                             deleter = client if client else self.bot_client
-                            
                             if deleter:
                                 try:
                                     await deleter.delete_messages(t_chat_id, [msg_id])
-                                    logger.info(f"🗑️ Deleted message {msg_id} from bot {target_sender_id}")
-                                    # Send confirmation
                                     await deleter.send_message(
                                         t_chat_id,
                                         f"✅ Okay ငါဖျက်ပေးမယ် (Bot ID: {target_sender_id})"
                                     )
-                                except FloodWaitError as e:
-                                    logger.error(f"❌ Delete FloodWait: {e}")
-                                    await asyncio.sleep(e.seconds + 1)
                                 except Exception as e:
-                                    logger.error(f"❌ Delete error: {e}")
-                            else:
-                                logger.warning("⚠️ No action client available to delete message")
-                        
-                        # ✅ FIX: Pass event.id, chat_id, sender_id as parameters
+                                    logger.error(f"Delete error: {e}")
                         asyncio.create_task(delete_after_delay(event.id, chat_id, sender_id))
-                        return  # Skip other processing (save, etc.)
-                    else:
-                        logger.info(f"⏭️ Skipping: message is command")
-                else:
-                    logger.info(f"⏭️ Sender {sender_id} NOT in watchlist")
-            else:
-                logger.info(f"⏭️ Chat {chat_id} NOT in watchlist")    
+                        return
 
             # 1. Dark Passenger
             if chat_id in self.dark_passenger_targets and sender_id == self.dark_passenger_targets[chat_id]:
