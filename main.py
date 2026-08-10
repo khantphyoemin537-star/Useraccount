@@ -1311,22 +1311,7 @@ class SovereignBot:
             else:
                 await event.reply(f"✅ Removed from DB.")
 
-        @self.bot_client.on(events.NewMessage(pattern=r"^/clearpr$"))
-        async def clear_pr(event):
-            if event.sender_id != Config.OWNER_ID:
-                return
-            await self.db.powerranger_col.delete_many({})
-            await self.close_action_clients()
-            await event.reply("🗑️ All Power Rangers cleared.")
-
-        @self.bot_client.on(events.NewMessage(pattern=r"^/restartpr$"))
-        async def restart_pr(event):
-            if event.sender_id != Config.OWNER_ID:
-                return
-            await event.reply("🔄 Restarting Power Rangers...")
-            await self.close_action_clients()
-            await self.load_userbots()
-            await event.reply(f"✅ Restarted. Active: {len(self.action_clients)}")
+ 
 
         # ==================== COPY MODE ====================
         @self.bot_client.on(events.NewMessage(pattern=r"^/copyon$"))
@@ -1409,6 +1394,127 @@ class SovereignBot:
                         await event.reply(f"⚠️ Joined but could not determine group ID. Use /setmatrix manually.")
                 except Exception as e2:
                     await event.reply(f"⚠️ Joined but failed to get ID: {e2}")
+        @self.bot_client.on(events.NewMessage(pattern=r"^/savetalk(?:\s+(.+))?$"))
+async def savetalk(event):
+    if event.sender_id != Config.OWNER_ID:
+        return
+
+    link = event.pattern_match.group(1)
+    if not link and event.is_reply:
+        reply = await event.get_reply_message()
+        if reply and reply.text:
+            link = reply.text.strip()
+
+    if not link:
+        await event.reply("❌ Usage: `/savetalk <group_link>` or reply to a message containing the link.")
+        return
+
+    # Extract hash from link
+    link_match = re.search(r'(https?://t\.me/(joinchat/|\+)[A-Za-z0-9_-]+)', link)
+    if not link_match:
+        await event.reply("❌ Invalid invite link.")
+        return
+    invite_link = link_match.group(0)
+    if 'joinchat/' in invite_link:
+        hash_part = invite_link.split('joinchat/')[1].split('?')[0]
+    elif '+' in invite_link:
+        hash_part = invite_link.split('+')[1].split('?')[0]
+    else:
+        await event.reply("❌ Could not parse hash.")
+        return
+
+    all_clients = self.action_clients.copy()
+    if not all_clients:
+        await event.reply("❌ No action clients. Add a Power Ranger first.")
+        return
+
+    # Try to get the group entity first (maybe already joined)
+    group_id = None
+    group_title = None
+    for client in all_clients:
+        try:
+            chat = await client.get_entity(invite_link)
+            group_id = chat.id
+            group_title = chat.title
+            logger.info(f"✅ Already in group: {group_title} (ID: {group_id}) with client")
+            break
+        except Exception:
+            continue
+
+    # If not already joined, try to join with each client
+    if group_id is None:
+        joined = 0
+        for client in all_clients:
+            try:
+                await client(ImportChatInviteRequest(hash_part))
+                joined += 1
+            except errors.rpcerrorlist.UserAlreadyParticipantError:
+                # Already a member, count as success
+                joined += 1
+            except Exception as e:
+                logger.warning(f"Join error for a client: {e}")
+            await asyncio.sleep(0.3)
+
+        if joined == 0:
+            await event.reply("❌ Could not join the group with any client.")
+            return
+
+        # Get group entity after joining (use first client that joined)
+        for client in all_clients:
+            try:
+                chat = await client.get_entity(invite_link)
+                group_id = chat.id
+                group_title = chat.title
+                break
+            except Exception:
+                continue
+
+        if group_id is None:
+            await event.reply("❌ Joined but couldn't fetch group info. Try again.")
+            return
+
+    # Now fetch messages from the group (text only, up to 10000)
+    await event.reply(f"✅ Joined/Found `{group_title}` (ID: {group_id}). Now saving up to 10000 messages...")
+
+    saved = 0
+    try:
+        # Use the first client that can access the group
+        for client in all_clients:
+            try:
+                # Test if we can get messages
+                async for msg in client.iter_messages(group_id, limit=1):
+                    break
+                # If we get here, we can use this client
+                break
+            except Exception:
+                continue
+        else:
+            await event.reply("❌ No client can read messages in the group.")
+            return
+
+        async for msg in client.iter_messages(group_id, limit=10000):
+            if msg.text and not msg.text.startswith('/'):
+                text = msg.text.strip()
+                if text:
+                    try:
+                        await self.db.talk_phrases.update_one(
+                            {"group_id": group_id, "text": text},
+                            {"$set": {"group_id": group_id, "text": text}},
+                            upsert=True
+                        )
+                        saved += 1
+                    except DuplicateKeyError:
+                        pass
+                    except Exception as e:
+                        logger.error(f"Talk save error: {e}")
+            if saved % 100 == 0:
+                await asyncio.sleep(0.1)
+    except Exception as e:
+        await event.reply(f"⚠️ Error while fetching messages: {e}")
+        return
+
+    await event.reply(f"✅ Saved {saved} unique phrases from `{group_title}` (ID: {group_id}).\n"
+                      f"Use `/talk {group_id}` to start talking with these phrases in a chat.")
 
         @self.bot_client.on(events.NewMessage(pattern=r"^/setmatrix$"))
         async def set_matrix(event):
@@ -1437,111 +1543,7 @@ class SovereignBot:
             except Exception as e:
                 await event.reply(f"❌ Failed to resolve: {e}")
 
-        @self.bot_client.on(events.NewMessage(pattern=r"^/check$"))
-        async def check_members(event):
-            if event.sender_id != Config.OWNER_ID:
-                return
-            if self.target_group_id is None:
-                await event.reply("❌ No target group. Use `/go` first or set manually.")
-                return
-            if self.check_in_progress:
-                await event.reply("⏳ Check already in progress.")
-                return
-            self.check_in_progress = True
-            await event.reply("🔍 Scanning members... (may take a while)")
-            admin_client = None
-            for client in self.action_clients:
-                try:
-                    await client.get_participants(self.target_group_id, limit=1)
-                    admin_client = client
-                    break
-                except Exception:
-                    continue
-            if not admin_client:
-                await event.reply("❌ No admin client found.")
-                self.check_in_progress = False
-                return
-            bad = []
-            total = 0
-            try:
-                async for participant in admin_client.iter_participants(self.target_group_id):
-                    total += 1
-                    user = participant.user if hasattr(participant, 'user') else participant
-                    if user.deleted:
-                        bad.append((user.id, user.first_name or "Deleted", "Deleted Account"))
-                        continue
-                    status = getattr(user, 'status', None)
-                    if status is None:
-                        continue
-                    if isinstance(status, UserStatusOffline):
-                        if status.was_online:
-                            six_months_ago = time.time() - (6 * 30 * 24 * 3600)
-                            if status.was_online.timestamp() < six_months_ago:
-                                bad.append((user.id, user.first_name or "No Name", "Offline >6 months"))
-                    elif isinstance(status, UserStatusEmpty):
-                        bad.append((user.id, user.first_name or "No Name", "Never seen"))
-            except FloodWaitError as e:
-                await event.reply(f"⏳ Flood wait {e.seconds}s. Try again later.")
-                self.check_in_progress = False
-                return
-            except Exception as e:
-                await event.reply(f"❌ Check error: {e}")
-                self.check_in_progress = False
-                return
-            self.check_in_progress = False
-            self.bad_users = bad
-            if bad:
-                msg = f"📊 **Scan result**\nTotal members: {total}\nBad accounts: {len(bad)}\n\n"
-                for uid, name, reason in bad[:50]:
-                    msg += f"• {name} (ID: {uid}) – {reason}\n"
-                if len(bad) > 50:
-                    msg += f"\n... and {len(bad)-50} more."
-                await event.reply(msg)
-                with open("bad_users.txt", "w", encoding="utf-8") as f:
-                    for uid, name, reason in bad:
-                        f.write(f"{uid},{name},{reason}\n")
-                await event.reply("📄 Full list saved to `bad_users.txt`.")
-            else:
-                await event.reply("✅ No bad accounts found.")
-
-        @self.bot_client.on(events.NewMessage(pattern=r"^/remove$"))
-        async def remove_bad(event):
-            if event.sender_id != Config.OWNER_ID:
-                return
-            if self.target_group_id is None:
-                await event.reply("❌ No target group.")
-                return
-            if not self.bad_users:
-                await event.reply("❌ No bad users list. Run `/check` first.")
-                return
-            await event.reply(f"⏳ Removing {len(self.bad_users)} users...")
-            admin_client = None
-            for client in self.action_clients:
-                try:
-                    await client.get_participants(self.target_group_id, limit=1)
-                    admin_client = client
-                    break
-                except Exception:
-                    continue
-            if not admin_client:
-                await event.reply("❌ No admin client.")
-                return
-            removed = 0
-            total = len(self.bad_users)
-            for i, (uid, name, reason) in enumerate(self.bad_users, 1):
-                try:
-                    await admin_client.kick_participant(self.target_group_id, uid)
-                    removed += 1
-                    if removed % 50 == 0:
-                        await event.reply(f"✅ Removed {removed}/{total}")
-                    await asyncio.sleep(0.3)
-                except FloodWaitError as e:
-                    await asyncio.sleep(e.seconds + 1)
-                except Exception as e:
-                    logger.error(f"Kick error: {e}")
-            await event.reply(f"✅ Removal complete. {removed} users kicked.")
-            self.bad_users = []
-
+        
         # ==================== STATUS COMMAND ====================
         @self.bot_client.on(events.NewMessage(pattern=r"^/status$"))
         async def status_cmd(event):
