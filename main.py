@@ -65,8 +65,8 @@ class Config:
     FLASK_PORT = int(os.getenv("PORT", "10000"))
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
-    BULLY_DELAY = 0.4
-    SHOOT_DELAY = 0.4
+    BULLY_DELAY = 1
+    SHOOT_DELAY = 1
     TALK_DELAY = 0.5      # NEW: delay between random talk messages (seconds)
     MAX_RETRIES = 3
 
