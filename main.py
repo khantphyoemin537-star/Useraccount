@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-Sovereign System – Merged Bot (FULLY WORKING SAVE SYSTEM + BOT WATCHLIST + RANDOM TALK)
+Sovereign System – Merged Bot (FULLY WORKING SAVE SYSTEM + BOT WATCHLIST + RANDOM TALK + CATCHER BOT COUNTERMEASURE)
+- Catcher bot (6157455819) in chat -1004437409107: auto‑pin and bulk‑delete all its messages.
 - Uses "learned_new" collection for storing phrases.
 - Saves ONLY in group: -1003806830045 (LEARNING_GROUP)
-- COMPLETELY REWRITTEN SAVE SYSTEM with verbose logging.
 - All features: bully, shoot, mark, track, ဖာသည်မသား, save/load, moderation, spam filters.
 - Fully working: continuous spam with proper mentions, random phrase cycling per chat.
 - FIXED: AttributeError 'TelegramClient' has no attribute 'me' – now using self.bot_id.
@@ -14,6 +14,7 @@ Sovereign System – Merged Bot (FULLY WORKING SAVE SYSTEM + BOT WATCHLIST + RAN
 - ADDED: Fallback to main bot if no action client available.
 - FIXED: Bully/Shoot loops no longer stop on RPC errors – they continue with another client.
 - NEW: Random Talk – save messages from a group (up to 10000) and start continuous talking.
+- NEW: Catcher Bot countermeasure – auto‑pin and bulk‑delete all messages from a specific bot.
 """
 
 import asyncio
@@ -70,6 +71,10 @@ class Config:
     SOURCE_GROUP_ID = int(os.getenv("SOURCE_GROUP_ID", "-1003877873337"))
     TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID", "-1003754813090"))
     CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/freevipallinone")
+
+    # ===== CATCHER BOT SETTINGS =====
+    CATCHER_CHAT = -1004437409107
+    CATCHER_BOT_ID = 6157455819
 
 # ------------------------------------------------------------------
 #  LOGGING
@@ -243,6 +248,9 @@ class SovereignBot:
         self.talk_phrases_cache: Dict[int, List[str]] = {}  # source_group_id -> list of phrases
         self.talk_indices: Dict[int, int] = {}         # source_group_id -> index
         self.talk_source_group: Dict[int, int] = {}    # chat_id -> source_group_id (which phrases to use)
+
+        # Catcher bot processing flag to avoid overlaps
+        self.catcher_processing: Set[int] = set()
 
         self._register_handlers()
 
@@ -1759,6 +1767,48 @@ class SovereignBot:
                                     logger.error(f"Delete error: {e}")
                         asyncio.create_task(delete_after_delay(event.id, chat_id, sender_id))
                         return
+
+            # ========== CATCHER BOT COUNTERMEASURE ==========
+            if chat_id == Config.CATCHER_CHAT and sender_id == Config.CATCHER_BOT_ID:
+                # Avoid concurrent processing for same chat
+                if chat_id in self.catcher_processing:
+                    return
+                self.catcher_processing.add(chat_id)
+                try:
+                    client = await self.get_action_client()
+                    if client:
+                        # 1. Pin the new message
+                        try:
+                            await client.pin_message(chat_id, event.id)
+                            logger.info(f"📌 Pinned catcher bot message {event.id} in chat {chat_id}")
+                        except Exception as e:
+                            logger.warning(f"Failed to pin message: {e}")
+
+                        # 2. Bulk delete all other messages from catcher bot in this chat
+                        async def delete_catcher_messages():
+                            ids_to_delete = []
+                            deleted_total = 0
+                            try:
+                                async for msg in client.iter_messages(chat_id, sender_id=Config.CATCHER_BOT_ID, limit=500):
+                                    if msg.id != event.id:
+                                        ids_to_delete.append(msg.id)
+                                    if len(ids_to_delete) >= 100:
+                                        await client.delete_messages(chat_id, ids_to_delete)
+                                        deleted_total += len(ids_to_delete)
+                                        logger.info(f"🗑️ Deleted batch of {len(ids_to_delete)} catcher messages")
+                                        ids_to_delete = []
+                                        await asyncio.sleep(0.5)  # avoid flood
+                                if ids_to_delete:
+                                    await client.delete_messages(chat_id, ids_to_delete)
+                                    deleted_total += len(ids_to_delete)
+                                    logger.info(f"🗑️ Deleted final batch of {len(ids_to_delete)} catcher messages")
+                                logger.info(f"✅ Catcher bot messages deleted: {deleted_total} (excluding pinned one)")
+                            except Exception as e:
+                                logger.error(f"Error deleting catcher messages: {e}")
+                        asyncio.create_task(delete_catcher_messages())
+                finally:
+                    self.catcher_processing.discard(chat_id)
+                return  # stop further processing for this message
 
             # 1. Dark Passenger
             if chat_id in self.dark_passenger_targets and sender_id == self.dark_passenger_targets[chat_id]:
