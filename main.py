@@ -67,13 +67,7 @@ class Config:
 SPAM_TEXT = """Spam spam spam! 🚀 I am the Spam God, the Lord of Spam, the King of Keys! 
 I spam like a turtle – slow but unstoppable! 🐢 
 Spam spam spam, I spam all day, I spam all night! 
-You can't stop me, I'm too fast, too furious, too spammy! 
-Get ready for the spam tsunami! 🌊 
-I am the master of spam, the legend of spam, the one and only Spam God! 
-Spam spam spam, I love it! 😈 
-If you see a turtle coming, you know it's me – the Spam Turtle King! 
-Spam spam spam, spam spam spam, spam spam spam! 
-Let's go! 🔥"""
+You can't stop me, I'm too fast, too furious, too spammy! 🔥"""
 # ------------------------------------------------------------------
 #  LOGGING
 # ------------------------------------------------------------------
