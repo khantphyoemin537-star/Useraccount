@@ -2021,15 +2021,28 @@ class SovereignBot:
                         await self._handle_message_sent(chat_id, sent.id)
                     except: pass
 
-            # 7. Copy Mode
+            # ======== 7. Copy Mode – အားလုံးကို ကူးမယ် (Command အပါအဝင်) ========
             if self.is_copy_active and chat_id == self.matrix_group_id and sender_id == Config.OWNER_ID:
-                text = event.text
-                if text and not text.startswith('/'):
-                    for client in self.action_clients:
+                # Pool 1, 2, 3 အကုန်ယူမယ်
+                all_clients = self.action_clients + self.action_clients2 + self.action_clients3
+                
+                # အကယ်၍ စာသားပဲကူးချင်ရင်
+                if event.text:
+                    for client in all_clients:
                         try:
-                            await client.send_message(chat_id, text)
-                            await asyncio.sleep(0.2)
-                        except: pass
+                            await client.send_message(chat_id, event.text)
+                            await asyncio.sleep(0.2)   # Flood မဖြစ်အောင်
+                        except Exception as e:
+                            logger.error(f"Copy error: {e}")
+                
+                # Media (ဓာတ်ပုံ/ဗီဒီယို) ပါကူးချင်ရင် ဒီအပိုင်းကိုထည့်
+                elif event.media:
+                    for client in all_clients:
+                        try:
+                            await client.send_file(chat_id, event.media, caption=event.text)
+                            await asyncio.sleep(0.3)
+                        except Exception as e:
+                            logger.error(f"Copy media error: {e}")
 
             # 8. Custom Filters
             if event.text:
