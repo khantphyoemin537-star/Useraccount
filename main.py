@@ -1661,7 +1661,7 @@ class SovereignBot:
                 await event.reply(f"✅ Joined with {success} clients (Pool 3), but couldn't fetch ID.")
 
         # ======== SETMATRIX ========
-        @self.bot_client.on(events.NewMessage(pattern=r"^/setmatrix$"))
+        @self.bot_client.on(events.NewMessage(pattern=r"^/setmatrix(?:\s+(.+))?$"))
         async def set_matrix(event):
             if event.sender_id != Config.OWNER_ID: return
             args = event.message.text.split(maxsplit=1)
