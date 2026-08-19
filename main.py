@@ -9,6 +9,7 @@ Sovereign System – ULTIMATE FULL VERSION (Pool 1, 2, 3 + Spam + Auto-Cleanup)
 - Auto-Cleanup (/del) uses in-memory cache (NO DB writes per message) for optimal performance.
 - All original features: save, talk, catcher bot, watchlist, taunts, spam filters, moderation, etc.
 - FIXED: /setmatrix argument support, Copy Mode ID comparison (-100 handling), Pool 1,2,3 full copy.
+- ADDED: /echo1, /echo2, /echo3 – continuous echo loops with pause on bot media.
 """
 
 import asyncio
@@ -55,13 +56,15 @@ class Config:
     SHOOT_DELAY = 0.4
     SPAM_DELAY = 0.8
     TALK_DELAY = 0.5
+    ECHO_DELAY = 0.2         # delay between echo messages
+    PAUSE_ON_BOT_MEDIA = 10   # seconds to pause echo when a bot sends media
     MAX_RETRIES = 3
 
     SOURCE_GROUP_ID = int(os.getenv("SOURCE_GROUP_ID", "-1003877873337"))
     TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID", "-1003754813090"))
     CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/freevipallinone")
 
-    CATCHER_CHAT = -1004437409107
+    CATCHER_CHAT = -1003580630981
     CATCHER_BOT_ID = 6157455819
 
 # Hardcoded Spam Text
@@ -200,6 +203,17 @@ class SovereignBot:
         self.tracking_targets3: Dict[int, int] = {}
         self.dark_passenger_targets3: Dict[int, int] = {}
         self.spam_tasks3: Dict[int, bool] = {}
+
+        # ---------- ECHO (new) ----------
+        self.echo_tasks1: Dict[int, bool] = {}
+        self.echo_tasks2: Dict[int, bool] = {}
+        self.echo_tasks3: Dict[int, bool] = {}
+        self.echo_pause_until1: Dict[int, float] = {}
+        self.echo_pause_until2: Dict[int, float] = {}
+        self.echo_pause_until3: Dict[int, float] = {}
+        self.echo_messages1: Dict[int, str] = {}
+        self.echo_messages2: Dict[int, str] = {}
+        self.echo_messages3: Dict[int, str] = {}
 
         # Shared taunt targets
         self.delete_and_taunt_targets: Dict[int, Set[int]] = {}
@@ -560,6 +574,89 @@ class SovereignBot:
                     await asyncio.sleep(2)
             logger.info(f"🛑 Spam loop stopped for chat {chat_id} (Pool {pool})")
         asyncio.create_task(spam_loop())
+
+    # --------------------------------------------------------------
+    #  ECHO LOOPS (NEW)
+    # --------------------------------------------------------------
+    async def _start_echo(self, chat_id: int, text: str, pool: int):
+        if pool == 1:
+            if self.echo_tasks1.get(chat_id, False):
+                return
+            self.echo_tasks1[chat_id] = True
+            self.echo_messages1[chat_id] = text
+            task_flag = self.echo_tasks1
+            pause_dict = self.echo_pause_until1
+            get_client = self.get_action_client
+            pool_name = "Pool 1"
+        elif pool == 2:
+            if self.echo_tasks2.get(chat_id, False):
+                return
+            self.echo_tasks2[chat_id] = True
+            self.echo_messages2[chat_id] = text
+            task_flag = self.echo_tasks2
+            pause_dict = self.echo_pause_until2
+            get_client = self.get_action_client2
+            pool_name = "Pool 2"
+        else:
+            if self.echo_tasks3.get(chat_id, False):
+                return
+            self.echo_tasks3[chat_id] = True
+            self.echo_messages3[chat_id] = text
+            task_flag = self.echo_tasks3
+            pause_dict = self.echo_pause_until3
+            get_client = self.get_action_client3
+            pool_name = "Pool 3"
+
+        async def echo_loop():
+            while task_flag.get(chat_id, False):
+                # Check for pause
+                if chat_id in pause_dict:
+                    pause_until = pause_dict[chat_id]
+                    if time.time() < pause_until:
+                        await asyncio.sleep(pause_until - time.time())
+                    else:
+                        del pause_dict[chat_id]  # resume
+                # Get client
+                client = await get_client()
+                if not client:
+                    await asyncio.sleep(1)
+                    continue
+                try:
+                    sent = await client.send_message(chat_id, text)
+                    await self._handle_message_sent(chat_id, sent.id)
+                    await asyncio.sleep(Config.ECHO_DELAY)
+                except FloodWaitError as e:
+                    await asyncio.sleep(e.seconds + 1)
+                except Exception as e:
+                    logger.error(f"Echo loop ({pool_name}) error: {e}")
+                    await asyncio.sleep(2)
+            # Cleanup when stopped
+            if pool == 1:
+                self.echo_messages1.pop(chat_id, None)
+                self.echo_pause_until1.pop(chat_id, None)
+            elif pool == 2:
+                self.echo_messages2.pop(chat_id, None)
+                self.echo_pause_until2.pop(chat_id, None)
+            else:
+                self.echo_messages3.pop(chat_id, None)
+                self.echo_pause_until3.pop(chat_id, None)
+            logger.info(f"🛑 Echo loop stopped for chat {chat_id} ({pool_name})")
+
+        asyncio.create_task(echo_loop())
+
+    async def _pause_echo_for_chat(self, chat_id: int, seconds: int = Config.PAUSE_ON_BOT_MEDIA):
+        """Pause all active echo loops for this chat."""
+        now = time.time()
+        pause_until = now + seconds
+        if chat_id in self.echo_tasks1 and self.echo_tasks1.get(chat_id, False):
+            self.echo_pause_until1[chat_id] = pause_until
+        if chat_id in self.echo_tasks2 and self.echo_tasks2.get(chat_id, False):
+            self.echo_pause_until2[chat_id] = pause_until
+        if chat_id in self.echo_tasks3 and self.echo_tasks3.get(chat_id, False):
+            self.echo_pause_until3[chat_id] = pause_until
+        # Log if any paused
+        if any(chat_id in d for d in [self.echo_tasks1, self.echo_tasks2, self.echo_tasks3]):
+            logger.info(f"⏸️ Paused echo loops in chat {chat_id} for {seconds}s due to bot media.")
 
     # --------------------------------------------------------------
     #  SPAM FILTERS (FULL)
@@ -1209,6 +1306,55 @@ class SovereignBot:
             await self._start_spam_loop(chat_id, 3)
             await event.reply(f"🗣️ Spam (Pool 3) started. (Text: {SPAM_TEXT[:30]}...)")
 
+        # ======== ECHO COMMANDS (NEW) ========
+        @self.bot_client.on(events.NewMessage(pattern=r"^/echo1(?:\s+(.+))?$"))
+        async def echo1_cmd(event):
+            if event.sender_id != Config.OWNER_ID:
+                await event.reply("⛔ Only owner can use this command.")
+                return
+            text = event.pattern_match.group(1)
+            if not text and event.is_reply:
+                reply = await event.get_reply_message()
+                if reply and reply.text:
+                    text = reply.text.strip()
+            if not text:
+                await event.reply("❓ Usage: `/echo1 <text>` or reply to a message.")
+                return
+            await self._start_echo(event.chat_id, text, 1)
+            await event.reply(f"🔊 Echo (Pool 1) started. Text: `{text[:30]}...`")
+
+        @self.bot_client.on(events.NewMessage(pattern=r"^/echo2(?:\s+(.+))?$"))
+        async def echo2_cmd(event):
+            if event.sender_id != Config.OWNER_ID:
+                await event.reply("⛔ Only owner can use this command.")
+                return
+            text = event.pattern_match.group(1)
+            if not text and event.is_reply:
+                reply = await event.get_reply_message()
+                if reply and reply.text:
+                    text = reply.text.strip()
+            if not text:
+                await event.reply("❓ Usage: `/echo2 <text>` or reply to a message.")
+                return
+            await self._start_echo(event.chat_id, text, 2)
+            await event.reply(f"🔊 Echo (Pool 2) started. Text: `{text[:30]}...`")
+
+        @self.bot_client.on(events.NewMessage(pattern=r"^/echo3(?:\s+(.+))?$"))
+        async def echo3_cmd(event):
+            if event.sender_id != Config.OWNER_ID:
+                await event.reply("⛔ Only owner can use this command.")
+                return
+            text = event.pattern_match.group(1)
+            if not text and event.is_reply:
+                reply = await event.get_reply_message()
+                if reply and reply.text:
+                    text = reply.text.strip()
+            if not text:
+                await event.reply("❓ Usage: `/echo3 <text>` or reply to a message.")
+                return
+            await self._start_echo(event.chat_id, text, 3)
+            await event.reply(f"🔊 Echo (Pool 3) started. Text: `{text[:30]}...`")
+
         # ======== "ဖာသည်မသား" (Shared) ========
         @self.bot_client.on(events.NewMessage(pattern=r"^ဖာသည်မသား$"))
         async def delete_and_taunt(event):
@@ -1262,7 +1408,7 @@ class SovereignBot:
                 await self._clear_taunt_targets(chat_id)
                 await event.reply("🧹 ဒီ Chat ထဲက အားလုံးကို ရှင်းလိုက်ပါပြီ။")
 
-        # ======== STOP COMMAND (UPDATED) ========
+        # ======== STOP COMMAND (UPDATED – also stops echo) ========
         @self.bot_client.on(events.NewMessage(pattern=r"^(ရပ်|/stop)$"))
         async def stop_attack(event):
             if not await self.is_allowed(event.sender_id): return
@@ -1288,9 +1434,13 @@ class SovereignBot:
             if chat_id in self.spam_tasks3: self.spam_tasks3[chat_id] = False; stopped = True
             # Talk
             if chat_id in self.talk_tasks: self.talk_tasks[chat_id] = False; stopped = True
+            # Echo (new)
+            if chat_id in self.echo_tasks1: self.echo_tasks1[chat_id] = False; stopped = True
+            if chat_id in self.echo_tasks2: self.echo_tasks2[chat_id] = False; stopped = True
+            if chat_id in self.echo_tasks3: self.echo_tasks3[chat_id] = False; stopped = True
             self.reset_phrase_cycle(chat_id)
             if stopped:
-                await event.reply("🛑 All active attacks (bully/shoot/track/spam/talk) stopped in this chat for all pools.")
+                await event.reply("🛑 All active attacks (bully/shoot/track/spam/talk/echo) stopped in this chat for all pools.")
             else:
                 await event.reply("ℹ️ No active attacks to stop.")
 
@@ -2022,21 +2172,19 @@ class SovereignBot:
                         await self._handle_message_sent(chat_id, sent.id)
                     except: pass
 
-            # ======== 7. Copy Mode – အားလုံးကို ကူးမယ် (Command အပါအဝင်) (FIXED: -100 handling) ========
+            # 7. Copy Mode – အားလုံးကို ကူးမယ် (Command အပါအဝင်) (FIXED: -100 handling)
             if self.is_copy_active and sender_id == Config.OWNER_ID:
-                # ID ကို -100 ဖယ်ပြီး နှိုင်းယှဉ်မယ် (Supergroup/Basic Group နှစ်မျိုးလုံးအလုပ်လုပ်မယ်)
                 current_chat_id = str(chat_id).replace('-100', '')
                 matrix_id = str(self.matrix_group_id).replace('-100', '') if self.matrix_group_id else None
                 
                 if matrix_id and current_chat_id == matrix_id:
-                    # Pool 1, 2, 3 အကုန်ယူမယ်
                     all_clients = self.action_clients + self.action_clients2 + self.action_clients3
                     
                     if event.text:
                         for client in all_clients:
                             try:
                                 await client.send_message(chat_id, event.text)
-                                await asyncio.sleep(0.2)   # Flood မဖြစ်အောင်
+                                await asyncio.sleep(0.2)
                             except Exception as e:
                                 logger.error(f"Copy error: {e}")
                     
@@ -2048,7 +2196,14 @@ class SovereignBot:
                             except Exception as e:
                                 logger.error(f"Copy media error: {e}")
 
-            # 8. Custom Filters
+            # 8. Pause echo on bot media (NEW)
+            sender = await event.get_sender()
+            if sender and sender.bot and sender.id != self.bot_id and event.media:
+                # Check if this chat has any active echo loops
+                if any(chat_id in d for d in [self.echo_tasks1, self.echo_tasks2, self.echo_tasks3]):
+                    await self._pause_echo_for_chat(chat_id)
+
+            # 9. Custom Filters
             if event.text:
                 text_lower = event.text.lower().strip()
                 async for f in self.db.custom_filters.find():
@@ -2062,7 +2217,7 @@ class SovereignBot:
                             break
                         except: pass
 
-            # 9. Protect Sovereign
+            # 10. Protect Sovereign
             if event.text and event.text.startswith(("ချိန်ထား", "ပစ်သတ်")):
                 reply = await event.get_reply_message()
                 if reply and reply.sender_id == Config.OWNER_ID and event.sender_id != Config.OWNER_ID:
