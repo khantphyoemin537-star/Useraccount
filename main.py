@@ -65,10 +65,7 @@ class Config:
     CATCHER_BOT_ID = 6157455819
 
 # Hardcoded Spam Text
-SPAM_TEXT = """Spam spam spam! 🚀 I am the Spam God, the Lord of Spam, the King of Keys! 
-I spam like a turtle – slow but unstoppable! 🐢 
-Spam spam spam, I spam all day, I spam all night! 
-You can't stop me, I'm too fast, too furious, too spammy! 🔥"""
+SPAM_TEXT = """ @imjustikidding_bot , @fuckyourwifey_bot rjsjsjsjssjsjjssjsjdjsjsjsjzjsjsjssnsnsnsndndndjsdjdndjdjdjdjdjsjdjdjdjdjdjsjsnsj """
 # ------------------------------------------------------------------
 #  LOGGING
 # ------------------------------------------------------------------
