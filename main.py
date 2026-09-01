@@ -10,7 +10,7 @@ Sovereign System – ULTIMATE FULL VERSION (Pool 1, 2, 3 + Spam + Auto-Cleanup)
 - All original features: save, talk, catcher bot, watchlist, taunts, spam filters, moderation, etc.
 - FIXED: /setmatrix argument support, Copy Mode ID comparison (-100 handling), Pool 1,2,3 full copy.
 """
-
+#
 import asyncio
 import logging
 import os
