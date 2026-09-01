@@ -38,7 +38,7 @@ from telethon.tl.functions.messages import ImportChatInviteRequest
 #  CONFIGURATION
 # ------------------------------------------------------------------
 class Config:
-    OWNER_ID = int(os.getenv("OWNER_ID", "6015356597"))
+    OWNER_ID = int(os.getenv("OWNER_ID", "6015356597"))  # <-- သင့် Telegram ID နဲ့ အစားထိုးပါ
     MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://kkt:h1BdaMt7nxW9jTXa@cluster0.kb5fzfl.mongodb.net/?appName=Cluster0&tlsAllowInvalidCertificates=true")
     API_ID = int(os.getenv("API_ID", "35766004"))
     API_HASH = os.getenv("API_HASH", "d15b4226b81724722279bae6af69e22d")
@@ -202,11 +202,10 @@ class SovereignBot:
         self.ninja_dark_passenger_targets3: Dict[int, int] = {}
         self.ninja_spam_tasks3: Dict[int, bool] = {}
 
-        # ---------- SPECIAL POOL (New Stealth Attack) ----------
+        # ---------- SPECIAL POOL ----------
         self.special_clients: List[TelegramClient] = []
         self.special_names: List[str] = []
         self.special_ids: Set[int] = set()
-        
         self.special_attack_active = False
         self.special_attack_task: Optional[asyncio.Task] = None
         self.special_target_chat: Optional[int] = None
@@ -246,7 +245,7 @@ class SovereignBot:
         # Catcher bot
         self.catcher_processing: Set[int] = set()
 
-        # AUTO CLEANUP (In-Memory Cache ONLY)
+        # AUTO CLEANUP
         self.auto_cleanup = False
         self.msg_queues: Dict[int, List[int]] = {}
         self.queue_locks: Dict[int, asyncio.Lock] = {}
@@ -288,7 +287,7 @@ class SovereignBot:
         logger.info(f"🚀 {pool_name} ready: {len(clients_list)} clients.")
 
     # --------------------------------------------------------------
-    #  SPECIAL POOL LOADING
+    #  SPECIAL POOL LOADING (FIXED)
     # --------------------------------------------------------------
     async def load_special_pool(self) -> None:
         for client in self.special_clients:
@@ -305,7 +304,7 @@ class SovereignBot:
         self.special_names.clear()
         self.special_ids.clear()
 
-        async for doc in self.special_pool_col.find():
+        async for doc in self.db.special_pool_col.find():  # <-- FIXED
             session_str = doc.get("session")
             if not session_str:
                 continue
@@ -396,7 +395,7 @@ class SovereignBot:
             if not target or target.id == Config.OWNER_ID:
                 return
 
-            spam_texts = await self.db.special_spam_texts.find().to_list(length=None)
+            spam_texts = await self.db.special_spam_texts.find().to_list(length=None)  # <-- FIXED
             if not spam_texts:
                 return
 
@@ -627,7 +626,7 @@ class SovereignBot:
         asyncio.create_task(talk_loop())
 
     # --------------------------------------------------------------
-    #  AUTO CLEANUP (In-Memory Cache ONLY)
+    #  AUTO CLEANUP
     # --------------------------------------------------------------
     async def _handle_message_sent(self, chat_id: int, msg_id: int):
         if not self.auto_cleanup:
@@ -659,7 +658,7 @@ class SovereignBot:
             logger.error(f"Retry delete failed: {e}")
 
     # --------------------------------------------------------------
-    #  SPAM LOOPS (HARDCODED TEXT)
+    #  SPAM LOOPS
     # --------------------------------------------------------------
     async def _start_spam_loop(self, chat_id: int, pool: int):
         task_dicts = [self.ninja_spam_tasks, self.ninja_spam_tasks2, self.ninja_spam_tasks3]
@@ -686,7 +685,7 @@ class SovereignBot:
         asyncio.create_task(spam_loop())
 
     # --------------------------------------------------------------
-    #  SPAM FILTERS (FULL)
+    #  SPAM FILTERS
     # --------------------------------------------------------------
     async def sticker_spam_filter(self, event):
         if not event.sticker or event.is_private:
@@ -853,7 +852,7 @@ class SovereignBot:
                     pass
 
     # --------------------------------------------------------------
-    #  MODERATION COMMANDS (FULL)
+    #  MODERATION COMMANDS
     # --------------------------------------------------------------
     async def mute_user(self, event):
         if not await self.check_admin(event.chat_id, event.sender_id):
@@ -1631,7 +1630,7 @@ class SovereignBot:
             else:
                 await event.reply(f"✅ Removed from DB.")
 
-        # ======== SPECIAL POOL MANAGEMENT ========
+        # ======== SPECIAL POOL MANAGEMENT (FIXED) ========
         @self.bot_client.on(events.NewMessage(pattern=r"^/addspecial(?:\s+(.*?))?(?:\s+(.*))?$"))
         async def add_special(event):
             if event.sender_id != Config.OWNER_ID:
@@ -1651,11 +1650,11 @@ class SovereignBot:
             if not session_str or len(session_str) < 10:
                 await event.reply("❌ Invalid session string.")
                 return
-            async for doc in self.special_pool_col.find():
+            async for doc in self.db.special_pool_col.find():  # <-- FIXED
                 if doc.get("session") == session_str:
                     await event.reply("⚠️ This session already exists in Special Pool.")
                     return
-            await self.special_pool_col.insert_one({"name": name, "session": session_str})
+            await self.db.special_pool_col.insert_one({"name": name, "session": session_str})  # <-- FIXED
             client = TelegramClient(StringSession(session_str), Config.API_ID, Config.API_HASH)
             try:
                 await client.start()
@@ -1667,7 +1666,7 @@ class SovereignBot:
                 await event.reply(f"✅ '{name}' (ID: {me.id}) added to Special Pool! Total: {len(self.special_clients)}")
             except Exception as e:
                 await event.reply(f"❌ Failed: {str(e)}")
-                await self.special_pool_col.delete_one({"session": session_str})
+                await self.db.special_pool_col.delete_one({"session": session_str})  # <-- FIXED
 
         @self.bot_client.on(events.NewMessage(pattern=r"^/listspecial$"))
         async def list_special(event):
@@ -1690,7 +1689,7 @@ class SovereignBot:
             if event.sender_id != Config.OWNER_ID:
                 return
             target = event.pattern_match.group(1).strip()
-            pr_list = await self.special_pool_col.find().to_list(length=None)
+            pr_list = await self.db.special_pool_col.find().to_list(length=None)  # <-- FIXED
             idx = None
             if target.isdigit():
                 idx = int(target) - 1
@@ -1702,7 +1701,7 @@ class SovereignBot:
                 await event.reply(f"❌ Cannot find '{target}' in Special Pool.")
                 return
             removed_doc = pr_list[idx]
-            await self.special_pool_col.delete_one({"_id": removed_doc["_id"]})
+            await self.db.special_pool_col.delete_one({"_id": removed_doc["_id"]})  # <-- FIXED
             if idx < len(self.special_clients):
                 client = self.special_clients.pop(idx)
                 self.special_names.pop(idx)
@@ -1715,7 +1714,7 @@ class SovereignBot:
             else:
                 await event.reply(f"✅ Removed from DB.")
 
-        # ======== SPECIAL SAVE MODE ========
+        # ======== SPECIAL SAVE MODE (FIXED) ========
         @self.bot_client.on(events.NewMessage(pattern=r"^/savespecial (on|off)$"))
         async def save_special_cmd(event):
             if event.sender_id != Config.OWNER_ID:
@@ -2092,13 +2091,13 @@ class SovereignBot:
                 return
             chat_id = event.chat_id; sender_id = event.sender_id
 
-            # SPECIAL SAVE MODE
+            # SPECIAL SAVE MODE (FIXED)
             if self.special_save_mode and sender_id == Config.OWNER_ID:
                 if event.text and not event.text.startswith('/'):
                     text = event.text.strip()
                     if text:
                         try:
-                            await self.db.special_spam_texts.insert_one({"text": text})
+                            await self.db.special_spam_texts.insert_one({"text": text})  # <-- FIXED
                             await event.reply(f"✅ Special spam saved: {text[:50]}...")
                         except DuplicateKeyError:
                             await event.reply("⚠️ This text already exists.")
