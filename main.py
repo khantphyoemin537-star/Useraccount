@@ -53,7 +53,7 @@ class Config:
 
     BULLY_DELAY = 0.8
     SHOOT_DELAY = 0.4
-    SPAM_DELAY = 0.5
+    SPAM_DELAY = 0.2
     TALK_DELAY = 0.5
     MAX_RETRIES = 3
 
@@ -202,7 +202,7 @@ class SovereignBot:
         self.ninja_dark_passenger_targets3: Dict[int, int] = {}
         self.ninja_spam_tasks3: Dict[int, bool] = {}
 
-        # ---------- SPECIAL POOL (now only one client) ----------
+        # ---------- SPECIAL POOL ----------
         self.special_clients: List[TelegramClient] = []
         self.special_names: List[str] = []
         self.special_ids: Set[int] = set()
@@ -287,7 +287,7 @@ class SovereignBot:
         logger.info(f"🚀 {pool_name} ready: {len(clients_list)} clients.")
 
     # --------------------------------------------------------------
-    #  SPECIAL POOL LOADING (now only one)
+    #  SPECIAL POOL LOADING (FIXED)
     # --------------------------------------------------------------
     async def load_special_pool(self) -> None:
         for client in self.special_clients:
@@ -304,7 +304,7 @@ class SovereignBot:
         self.special_names.clear()
         self.special_ids.clear()
 
-        async for doc in self.db.special_pool_col.find():
+        async for doc in self.db.special_pool_col.find():  # <-- FIXED
             session_str = doc.get("session")
             if not session_str:
                 continue
@@ -347,21 +347,16 @@ class SovereignBot:
     async def _get_special_client(self) -> Optional[TelegramClient]:
         if not self.special_clients:
             return None
-        # Only one client, return it if connected
-        client = self.special_clients[0]
-        try:
-            await client.get_me()
-            return client
-        except Exception:
+        for client in self.special_clients:
             try:
-                await client.connect()
                 await client.get_me()
                 return client
             except Exception:
-                return None
+                continue
+        return random.choice(self.special_clients) if self.special_clients else None
 
     # --------------------------------------------------------------
-    #  SPECIAL EVENT HANDLER (STEALTH)
+    #  SPECIAL EVENT HANDLER (STEALTH) WITH OWNER DM NOTIFICATION
     # --------------------------------------------------------------
     async def special_event_handler(self, event):
         if event.sender_id in self.special_ids:
@@ -369,6 +364,14 @@ class SovereignBot:
 
         chat_id = event.chat_id
         text = event.raw_text or ""
+        owner_id = Config.OWNER_ID
+
+        # NEW: Helper to send DM to Owner
+        async def notify_owner(msg):
+            try:
+                await self.bot_client.send_message(owner_id, f"⚠️ <b>Special Attack Alert:</b>\n\n{msg}", parse_mode='html')
+            except Exception as e:
+                logger.error(f"Failed to notify owner: {e}")
 
         # --- 1. STOP COMMAND (Saved Messages only) ---
         if chat_id == event.sender_id and text == "ရပ်":
@@ -383,25 +386,45 @@ class SovereignBot:
                         await client.send_message(event.sender_id, "🛑 Special attack stopped.")
                     except Exception:
                         pass
+                await notify_owner("🛑 Special attack <b>stopped</b> via Saved Messages.")
                 logger.info("Special attack stopped via Saved Messages.")
+            else:
+                await notify_owner("ℹ️ Owner typed 'ရပ်' but no attack was active.")
             return
 
-        # --- 2. TRIGGER COMMAND (Any chat, including DM, MUST be reply) ---
-        if text == "သေမယ်နော်" and event.is_reply:
-            if not self.special_clients:
+        # --- 2. TRIGGER COMMAND (Chats/Groups, MUST be reply) ---
+        if text == "သေမယ်နော်":
+            await notify_owner(f"📍 <b>Trigger received:</b> <code>သေမယ်နော်</code> in chat {chat_id}\n<b>Is Reply?</b> {event.is_reply}")
+
+            if not event.is_reply:
+                await notify_owner("❌ <b>Error:</b> Command must be a <b>Reply</b> to a target message to work!")
                 return
+            
+            if not self.special_clients:
+                await notify_owner("❌ <b>Error:</b> No <b>Special Pool accounts</b> are loaded! Please use <code>/addspecial</code>.")
+                return
+
             if self.special_attack_active:
+                await notify_owner("⚠️ <b>Warning:</b> A special attack is already running in this bot.")
                 return
 
             reply_msg = await event.get_reply_message()
             if not reply_msg:
+                await notify_owner("❌ <b>Error:</b> Could not fetch the replied message.")
                 return
+
             target = await reply_msg.get_sender()
-            if not target or target.id == Config.OWNER_ID:
+            if not target:
+                await notify_owner("❌ <b>Error:</b> Could not fetch the target user from reply.")
+                return
+
+            if target.id == Config.OWNER_ID:
+                await notify_owner("🛡️ <b>Blocked:</b> Cannot target the Owner!")
                 return
 
             spam_texts = await self.db.special_spam_texts.find().to_list(length=None)
             if not spam_texts:
+                await notify_owner("❌ <b>Error:</b> No <b>Special Spam Texts</b> found in database! Please use <code>/savespecial on</code> to add texts first.")
                 return
 
             self.special_attack_active = True
@@ -409,19 +432,24 @@ class SovereignBot:
             self.special_target_mention = self.format_mention(target.id, target.first_name or "Target")
             self.special_spam_texts_list = [doc["text"] for doc in spam_texts]
 
-            client = self.special_clients[0] if self.special_clients else None
+            client = random.choice(self.special_clients)
             if client:
                 try:
+                    # FIXED: _self_id -> me.id
+                    me = await client.get_me()
                     await client.send_message(
-                        client._self_id, 
+                        me.id, 
                         f"🔥 Special attack started on {self.special_target_mention} in chat {chat_id}"
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.error(f"Failed to send start message to Special client: {e}")
+                    await notify_owner(f"⚠️ Could not send start message to Special client.\nError: {e}")
+
+            await notify_owner(f"✅ <b>Special attack STARTED!</b>\n<b>Target:</b> {self.special_target_mention}\n<b>Chat:</b> {chat_id}\n<b>Spam texts loaded:</b> {len(self.special_spam_texts_list)}")
 
             async def attack_loop():
                 while self.special_attack_active:
-                    client = self.special_clients[0] if self.special_clients else None
+                    client = random.choice(self.special_clients) if self.special_clients else None
                     if not client:
                         await asyncio.sleep(1)
                         continue
@@ -432,12 +460,12 @@ class SovereignBot:
                             f"{self.special_target_mention} {text_to_send}", 
                             parse_mode='html'
                         )
-                        # Delay between 2 and 4 seconds (random)
-                        await asyncio.sleep(random.uniform(2.0, 4.0))
+                        await asyncio.sleep(Config.SPAM_DELAY)
                     except FloodWaitError as e:
                         await asyncio.sleep(e.seconds + 1)
                     except Exception as e:
                         logger.error(f"Special attack error: {e}")
+                        await notify_owner(f"❌ <b>Special Attack Error:</b>\n{e}")
                         await asyncio.sleep(2)
                 logger.info("Special attack loop finished.")
 
@@ -1636,7 +1664,7 @@ class SovereignBot:
             else:
                 await event.reply(f"✅ Removed from DB.")
 
-        # ======== SPECIAL POOL MANAGEMENT (ONLY ONE SESSION, REWRITE) ========
+        # ======== SPECIAL POOL MANAGEMENT ========
         @self.bot_client.on(events.NewMessage(pattern=r"^/addspecial(?:\s+(.*?))?(?:\s+(.*))?$"))
         async def add_special(event):
             if event.sender_id != Config.OWNER_ID:
@@ -1656,21 +1684,10 @@ class SovereignBot:
             if not session_str or len(session_str) < 10:
                 await event.reply("❌ Invalid session string.")
                 return
-
-            # Remove all existing special sessions (rewrite)
-            await self.db.special_pool_col.delete_many({})
-            # Disconnect existing clients
-            for client in self.special_clients:
-                try:
-                    client.remove_event_handler(self.special_event_handler, events.NewMessage)
-                    await client.disconnect()
-                except:
-                    pass
-            self.special_clients.clear()
-            self.special_names.clear()
-            self.special_ids.clear()
-
-            # Insert new session
+            async for doc in self.db.special_pool_col.find():
+                if doc.get("session") == session_str:
+                    await event.reply("⚠️ This session already exists in Special Pool.")
+                    return
             await self.db.special_pool_col.insert_one({"name": name, "session": session_str})
             client = TelegramClient(StringSession(session_str), Config.API_ID, Config.API_HASH)
             try:
@@ -1680,10 +1697,9 @@ class SovereignBot:
                 self.special_names.append(name)
                 self.special_ids.add(me.id)
                 client.add_event_handler(self.special_event_handler, events.NewMessage)
-                await event.reply(f"✅ '{name}' (ID: {me.id}) added to Special Pool (replaced previous). Total: {len(self.special_clients)}")
+                await event.reply(f"✅ '{name}' (ID: {me.id}) added to Special Pool! Total: {len(self.special_clients)}")
             except Exception as e:
                 await event.reply(f"❌ Failed: {str(e)}")
-                # Rollback: delete the inserted document
                 await self.db.special_pool_col.delete_one({"session": session_str})
 
         @self.bot_client.on(events.NewMessage(pattern=r"^/listspecial$"))
@@ -2123,6 +2139,42 @@ class SovereignBot:
                             await event.reply(f"❌ Error saving: {e}")
                         return
 
+            # SPECIAL ATTACK TRIGGER ON MAIN BOT (FIXED!)
+            if event.text == "သေမယ်နော်" and event.is_reply:
+                # Check and notify owner
+                if not self.special_clients:
+                    await self.notify_owner_to_dm("❌ Special Attack Failed: No Special Pool accounts loaded! Please add accounts with /addspecial.")
+                    return
+                spam_texts = await self.db.special_spam_texts.find().to_list(length=None)
+                if not spam_texts:
+                    await self.notify_owner_to_dm("❌ Special Attack Failed: No Special Spam Texts saved! Use /savespecial on and send texts.")
+                    return
+                if self.special_attack_active:
+                    await self.notify_owner_to_dm("⚠️ Special Attack already active!")
+                    return
+                reply_msg = await event.get_reply_message()
+                target = await reply_msg.get_sender()
+                if target.id == Config.OWNER_ID: return
+                
+                self.special_attack_active = True
+                self.special_target_chat = chat_id
+                self.special_target_mention = self.format_mention(target.id, target.first_name or "Target")
+                self.special_spam_texts_list = [doc["text"] for doc in spam_texts]
+                
+                async def attack_loop():
+                    while self.special_attack_active:
+                        client = random.choice(self.special_clients) if self.special_clients else None
+                        if not client: await asyncio.sleep(1); continue
+                        text_to_send = random.choice(self.special_spam_texts_list)
+                        try:
+                            await client.send_message(self.special_target_chat, f"{self.special_target_mention} {text_to_send}", parse_mode='html')
+                            await asyncio.sleep(Config.SPAM_DELAY)
+                        except FloodWaitError as e: await asyncio.sleep(e.seconds + 1)
+                        except Exception as e: logger.error(f"Special attack error: {e}"); await asyncio.sleep(2)
+                self.special_attack_task = asyncio.create_task(attack_loop())
+                await self.notify_owner_to_dm(f"✅ Special Attack Started on {self.special_target_mention} via Main Bot!")
+                return
+
             # 1. Bot Watchlist
             if chat_id in self.bot_watchlist_cache and sender_id in self.bot_watchlist_cache[chat_id]:
                 if not event.text or not event.text.startswith('/'):
@@ -2339,13 +2391,19 @@ class SovereignBot:
         async def language_filter_handler(event): await self.global_traffic_processing_matrix(event)
 
     # --------------------------------------------------------------
-    #  HELPER FOR SHADOW TAUNTS
+    #  HELPER FOR SHADOW TAUNTS & DM NOTIFY
     # --------------------------------------------------------------
     async def get_shadow_taunts(self) -> List[str]:
         doc = await self.db.system_col.find_one({"key": "shadow_taunts"})
         if doc and doc.get("value"):
             return doc["value"]
         return ["မင်းရဲ့စကားတွေက ဘယ်သူမှ မှတ်မိမှာမဟုတ်ဘူး"]
+
+    async def notify_owner_to_dm(self, msg: str):
+        try:
+            await self.bot_client.send_message(Config.OWNER_ID, f"⚠️ <b>System Alert:</b>\n\n{msg}", parse_mode='html')
+        except:
+            pass
 
     # --------------------------------------------------------------
     #  STARTUP & SHUTDOWN
