@@ -53,7 +53,7 @@ class Config:
 
     BULLY_DELAY = 0.8
     SHOOT_DELAY = 0.4
-    SPAM_DELAY = 0.2
+    SPAM_DELAY = 0.5
     TALK_DELAY = 0.5
     MAX_RETRIES = 3
 
@@ -202,7 +202,7 @@ class SovereignBot:
         self.ninja_dark_passenger_targets3: Dict[int, int] = {}
         self.ninja_spam_tasks3: Dict[int, bool] = {}
 
-        # ---------- SPECIAL POOL ----------
+        # ---------- SPECIAL POOL (now only one client) ----------
         self.special_clients: List[TelegramClient] = []
         self.special_names: List[str] = []
         self.special_ids: Set[int] = set()
@@ -287,7 +287,7 @@ class SovereignBot:
         logger.info(f"🚀 {pool_name} ready: {len(clients_list)} clients.")
 
     # --------------------------------------------------------------
-    #  SPECIAL POOL LOADING (FIXED)
+    #  SPECIAL POOL LOADING (now only one)
     # --------------------------------------------------------------
     async def load_special_pool(self) -> None:
         for client in self.special_clients:
@@ -304,7 +304,7 @@ class SovereignBot:
         self.special_names.clear()
         self.special_ids.clear()
 
-        async for doc in self.db.special_pool_col.find():  # <-- FIXED
+        async for doc in self.db.special_pool_col.find():
             session_str = doc.get("session")
             if not session_str:
                 continue
@@ -347,13 +347,18 @@ class SovereignBot:
     async def _get_special_client(self) -> Optional[TelegramClient]:
         if not self.special_clients:
             return None
-        for client in self.special_clients:
+        # Only one client, return it if connected
+        client = self.special_clients[0]
+        try:
+            await client.get_me()
+            return client
+        except Exception:
             try:
+                await client.connect()
                 await client.get_me()
                 return client
             except Exception:
-                continue
-        return random.choice(self.special_clients) if self.special_clients else None
+                return None
 
     # --------------------------------------------------------------
     #  SPECIAL EVENT HANDLER (STEALTH)
@@ -381,7 +386,7 @@ class SovereignBot:
                 logger.info("Special attack stopped via Saved Messages.")
             return
 
-        # --- 2. TRIGGER COMMAND (Chats/Groups, MUST be reply) ---
+        # --- 2. TRIGGER COMMAND (Any chat, including DM, MUST be reply) ---
         if text == "သေမယ်နော်" and event.is_reply:
             if not self.special_clients:
                 return
@@ -395,7 +400,7 @@ class SovereignBot:
             if not target or target.id == Config.OWNER_ID:
                 return
 
-            spam_texts = await self.db.special_spam_texts.find().to_list(length=None)  # <-- FIXED
+            spam_texts = await self.db.special_spam_texts.find().to_list(length=None)
             if not spam_texts:
                 return
 
@@ -404,7 +409,7 @@ class SovereignBot:
             self.special_target_mention = self.format_mention(target.id, target.first_name or "Target")
             self.special_spam_texts_list = [doc["text"] for doc in spam_texts]
 
-            client = random.choice(self.special_clients)
+            client = self.special_clients[0] if self.special_clients else None
             if client:
                 try:
                     await client.send_message(
@@ -416,7 +421,7 @@ class SovereignBot:
 
             async def attack_loop():
                 while self.special_attack_active:
-                    client = random.choice(self.special_clients) if self.special_clients else None
+                    client = self.special_clients[0] if self.special_clients else None
                     if not client:
                         await asyncio.sleep(1)
                         continue
@@ -427,7 +432,8 @@ class SovereignBot:
                             f"{self.special_target_mention} {text_to_send}", 
                             parse_mode='html'
                         )
-                        await asyncio.sleep(Config.SPAM_DELAY)
+                        # Delay between 2 and 4 seconds (random)
+                        await asyncio.sleep(random.uniform(2.0, 4.0))
                     except FloodWaitError as e:
                         await asyncio.sleep(e.seconds + 1)
                     except Exception as e:
@@ -1630,7 +1636,7 @@ class SovereignBot:
             else:
                 await event.reply(f"✅ Removed from DB.")
 
-        # ======== SPECIAL POOL MANAGEMENT (FIXED) ========
+        # ======== SPECIAL POOL MANAGEMENT (ONLY ONE SESSION, REWRITE) ========
         @self.bot_client.on(events.NewMessage(pattern=r"^/addspecial(?:\s+(.*?))?(?:\s+(.*))?$"))
         async def add_special(event):
             if event.sender_id != Config.OWNER_ID:
@@ -1650,11 +1656,22 @@ class SovereignBot:
             if not session_str or len(session_str) < 10:
                 await event.reply("❌ Invalid session string.")
                 return
-            async for doc in self.db.special_pool_col.find():  # <-- FIXED
-                if doc.get("session") == session_str:
-                    await event.reply("⚠️ This session already exists in Special Pool.")
-                    return
-            await self.db.special_pool_col.insert_one({"name": name, "session": session_str})  # <-- FIXED
+
+            # Remove all existing special sessions (rewrite)
+            await self.db.special_pool_col.delete_many({})
+            # Disconnect existing clients
+            for client in self.special_clients:
+                try:
+                    client.remove_event_handler(self.special_event_handler, events.NewMessage)
+                    await client.disconnect()
+                except:
+                    pass
+            self.special_clients.clear()
+            self.special_names.clear()
+            self.special_ids.clear()
+
+            # Insert new session
+            await self.db.special_pool_col.insert_one({"name": name, "session": session_str})
             client = TelegramClient(StringSession(session_str), Config.API_ID, Config.API_HASH)
             try:
                 await client.start()
@@ -1663,10 +1680,11 @@ class SovereignBot:
                 self.special_names.append(name)
                 self.special_ids.add(me.id)
                 client.add_event_handler(self.special_event_handler, events.NewMessage)
-                await event.reply(f"✅ '{name}' (ID: {me.id}) added to Special Pool! Total: {len(self.special_clients)}")
+                await event.reply(f"✅ '{name}' (ID: {me.id}) added to Special Pool (replaced previous). Total: {len(self.special_clients)}")
             except Exception as e:
                 await event.reply(f"❌ Failed: {str(e)}")
-                await self.db.special_pool_col.delete_one({"session": session_str})  # <-- FIXED
+                # Rollback: delete the inserted document
+                await self.db.special_pool_col.delete_one({"session": session_str})
 
         @self.bot_client.on(events.NewMessage(pattern=r"^/listspecial$"))
         async def list_special(event):
@@ -1689,7 +1707,7 @@ class SovereignBot:
             if event.sender_id != Config.OWNER_ID:
                 return
             target = event.pattern_match.group(1).strip()
-            pr_list = await self.db.special_pool_col.find().to_list(length=None)  # <-- FIXED
+            pr_list = await self.db.special_pool_col.find().to_list(length=None)
             idx = None
             if target.isdigit():
                 idx = int(target) - 1
@@ -1701,7 +1719,7 @@ class SovereignBot:
                 await event.reply(f"❌ Cannot find '{target}' in Special Pool.")
                 return
             removed_doc = pr_list[idx]
-            await self.db.special_pool_col.delete_one({"_id": removed_doc["_id"]})  # <-- FIXED
+            await self.db.special_pool_col.delete_one({"_id": removed_doc["_id"]})
             if idx < len(self.special_clients):
                 client = self.special_clients.pop(idx)
                 self.special_names.pop(idx)
@@ -1714,7 +1732,7 @@ class SovereignBot:
             else:
                 await event.reply(f"✅ Removed from DB.")
 
-        # ======== SPECIAL SAVE MODE (FIXED) ========
+        # ======== SPECIAL SAVE MODE ========
         @self.bot_client.on(events.NewMessage(pattern=r"^/savespecial (on|off)$"))
         async def save_special_cmd(event):
             if event.sender_id != Config.OWNER_ID:
@@ -2091,13 +2109,13 @@ class SovereignBot:
                 return
             chat_id = event.chat_id; sender_id = event.sender_id
 
-            # SPECIAL SAVE MODE (FIXED)
+            # SPECIAL SAVE MODE
             if self.special_save_mode and sender_id == Config.OWNER_ID:
                 if event.text and not event.text.startswith('/'):
                     text = event.text.strip()
                     if text:
                         try:
-                            await self.db.special_spam_texts.insert_one({"text": text})  # <-- FIXED
+                            await self.db.special_spam_texts.insert_one({"text": text})
                             await event.reply(f"✅ Special spam saved: {text[:50]}...")
                         except DuplicateKeyError:
                             await event.reply("⚠️ This text already exists.")
