@@ -5,7 +5,7 @@
 Sovereign System – ORIGINAL FULL VERSION (Ninja Pools 1, 2, 3 + Group Management)
 - Special Attack, Saved Messages Stop, /addspecial, Talk & Track REMOVED
 - Full Group Management (Mute, Ban, Kick, Go, Copy, Setmatrix, etc.) INCLUDED
-- Fixed MongoDB Index Error inside main.py
+- Fixed MongoDB Index Error and Syntax Error (Go command)
 """
 
 import asyncio
@@ -50,7 +50,7 @@ class Config:
 
     BULLY_DELAY = 0.8
     SHOOT_DELAY = 0.4
-    SPAM_DELAY = 1
+    SPAM_DELAY = 1.2
     MAX_RETRIES = 3
 
     SOURCE_GROUP_ID = int(os.getenv("SOURCE_GROUP_ID", "-1003877873337"))
@@ -99,7 +99,6 @@ class DatabaseManager:
                 await self.client.admin.command("ping")
                 self.db = self.client["telegram_bot"]
                 
-                # ✅ Fixed MongoDB Error here (No need to go to Atlas)
                 try:
                     await self.db.learned_new.drop_index("text_1")
                     logger.info("Dropped old unique index 'text_1'")
@@ -180,7 +179,7 @@ class SovereignBot:
         self.ninja_shoot_tasks3: Dict[int, bool] = {}
         self.ninja_spam_tasks3: Dict[int, bool] = {}
 
-        # Group Management & Other Features
+        # Group Management
         self.delete_and_taunt_targets: Dict[int, Set[int]] = {}
         self.save_status = False
         self.phrase_lists: Dict[int, List[str]] = {}
@@ -315,7 +314,7 @@ class SovereignBot:
         self.phrase_indices.pop(chat_id, None)
 
     # --------------------------------------------------------------
-    #  COMMAND HANDLERS (GROUP MANAGEMENT FULL)
+    #  COMMAND HANDLERS
     # --------------------------------------------------------------
     def _register_handlers(self):
 
@@ -348,7 +347,7 @@ class SovereignBot:
             if event.sender_id == self.bot_id or event.sender_id in all_ids: return
             chat_id = event.chat_id; sender_id = event.sender_id
 
-            # SAVE SYSTEM
+            # SAVE
             if chat_id == Config.LEARNING_GROUP and self.save_status:
                 if not await self.is_allowed(sender_id): return
                 text = None
@@ -530,6 +529,118 @@ class SovereignBot:
                 await event.reply(f"✅ '{name}' added to Ninja Pool 3! Total: {len(self.ninja_clients3)}")
             except Exception as e: await event.reply(f"❌ Failed: {str(e)}"); await self.db.ninja_col3.delete_one({"session": session_str})
 
+        # GROUP MANAGEMENT (FIXED GO COMMANDS)
+        @self.bot_client.on(events.NewMessage(pattern=r"^/go$"))
+        async def go_group(event):
+            if event.sender_id != Config.OWNER_ID: return
+            if not event.is_reply: await event.reply("❌ `/go` must be used in reply to an invite link."); return
+            reply = await event.get_reply_message()
+            if not reply.text: await event.reply("❌ No text in reply."); return
+            link_match = re.search(r'(https?://t\.me/(joinchat/|\+)[A-Za-z0-9_-]+)', reply.text)
+            if not link_match: await event.reply("❌ No valid invite link found."); return
+            invite_link = link_match.group(0)
+            hash_part = invite_link.split('joinchat/')[1].split('?')[0] if 'joinchat/' in invite_link else invite_link.split('+')[1].split('?')[0]
+            if not hash_part: await event.reply("❌ Could not extract hash."); return
+            all_clients = self.ninja_clients.copy()
+            if not all_clients: await event.reply("❌ No ninja clients in Pool 1."); return
+            await event.reply(f"⏳ Joining group with {len(all_clients)} clients...")
+            success = 0
+            for client in all_clients:
+                try:
+                    await client(ImportChatInviteRequest(hash_part))
+                    success += 1
+                except errors.rpcerrorlist.UserAlreadyParticipantError:
+                    success += 1
+                except FloodWaitError as e:
+                    await asyncio.sleep(e.seconds + 1)
+                    try:
+                        await client(ImportChatInviteRequest(hash_part))
+                        success += 1
+                    except:
+                        pass
+                except Exception:
+                    pass
+                await asyncio.sleep(0.3)
+            try:
+                chat = await all_clients[0].get_entity(invite_link)
+                await event.reply(f"✅ Joined group `{chat.title}` with {success} clients. ID: `{chat.id}`")
+            except:
+                await event.reply(f"✅ Joined with {success} clients.")
+
+        @self.bot_client.on(events.NewMessage(pattern=r"^/go2$"))
+        async def go_group2(event):
+            if event.sender_id != Config.OWNER_ID: return
+            if not event.is_reply: await event.reply("❌ `/go2` must be used in reply to an invite link."); return
+            reply = await event.get_reply_message()
+            if not reply.text: await event.reply("❌ No text in reply."); return
+            link_match = re.search(r'(https?://t\.me/(joinchat/|\+)[A-Za-z0-9_-]+)', reply.text)
+            if not link_match: await event.reply("❌ No valid invite link found."); return
+            invite_link = link_match.group(0)
+            hash_part = invite_link.split('joinchat/')[1].split('?')[0] if 'joinchat/' in invite_link else invite_link.split('+')[1].split('?')[0]
+            if not hash_part: await event.reply("❌ Could not extract hash."); return
+            all_clients = self.ninja_clients2.copy()
+            if not all_clients: await event.reply("❌ No ninja clients in Pool 2."); return
+            await event.reply(f"⏳ Joining group with {len(all_clients)} clients...")
+            success = 0
+            for client in all_clients:
+                try:
+                    await client(ImportChatInviteRequest(hash_part))
+                    success += 1
+                except errors.rpcerrorlist.UserAlreadyParticipantError:
+                    success += 1
+                except FloodWaitError as e:
+                    await asyncio.sleep(e.seconds + 1)
+                    try:
+                        await client(ImportChatInviteRequest(hash_part))
+                        success += 1
+                    except:
+                        pass
+                except Exception:
+                    pass
+                await asyncio.sleep(0.3)
+            try:
+                chat = await all_clients[0].get_entity(invite_link)
+                await event.reply(f"✅ Joined group `{chat.title}` with {success} clients (Pool 2). ID: `{chat.id}`")
+            except:
+                await event.reply(f"✅ Joined with {success} clients.")
+
+        @self.bot_client.on(events.NewMessage(pattern=r"^/go3$"))
+        async def go_group3(event):
+            if event.sender_id != Config.OWNER_ID: return
+            if not event.is_reply: await event.reply("❌ `/go3` must be used in reply to an invite link."); return
+            reply = await event.get_reply_message()
+            if not reply.text: await event.reply("❌ No text in reply."); return
+            link_match = re.search(r'(https?://t\.me/(joinchat/|\+)[A-Za-z0-9_-]+)', reply.text)
+            if not link_match: await event.reply("❌ No valid invite link found."); return
+            invite_link = link_match.group(0)
+            hash_part = invite_link.split('joinchat/')[1].split('?')[0] if 'joinchat/' in invite_link else invite_link.split('+')[1].split('?')[0]
+            if not hash_part: await event.reply("❌ Could not extract hash."); return
+            all_clients = self.ninja_clients3.copy()
+            if not all_clients: await event.reply("❌ No ninja clients in Pool 3."); return
+            await event.reply(f"⏳ Joining group with {len(all_clients)} clients...")
+            success = 0
+            for client in all_clients:
+                try:
+                    await client(ImportChatInviteRequest(hash_part))
+                    success += 1
+                except errors.rpcerrorlist.UserAlreadyParticipantError:
+                    success += 1
+                except FloodWaitError as e:
+                    await asyncio.sleep(e.seconds + 1)
+                    try:
+                        await client(ImportChatInviteRequest(hash_part))
+                        success += 1
+                    except:
+                        pass
+                except Exception:
+                    pass
+                await asyncio.sleep(0.3)
+            try:
+                chat = await all_clients[0].get_entity(invite_link)
+                await event.reply(f"✅ Joined group `{chat.title}` with {success} clients (Pool 3). ID: `{chat.id}`")
+            except:
+                await event.reply(f"✅ Joined with {success} clients.")
+
         # MODERATION
         @self.bot_client.on(events.NewMessage(pattern=r"^/mute(?:\s+(.*))?$"))
         async def handler_mute(event):
@@ -601,88 +712,6 @@ class SovereignBot:
                 mention = self.format_mention(target_user.id, target_user.first_name or 'User')
                 await event.reply(f"🌌 <b>KICK OPERATION</b>\n💨 <b>Target:</b> {mention}\n⚡ <b>Status:</b> <code>Removed / Kicked</code>", parse_mode='html')
             except Exception as e: logger.error(f"Kick Error: {e}")
-
-        # JOIN GROUPS (GO)
-        @self.bot_client.on(events.NewMessage(pattern=r"^/go$"))
-        async def go_group(event):
-            if event.sender_id != Config.OWNER_ID: return
-            if not event.is_reply: await event.reply("❌ `/go` must be used in reply to an invite link."); return
-            reply = await event.get_reply_message()
-            if not reply.text: await event.reply("❌ No text in reply."); return
-            link_match = re.search(r'(https?://t\.me/(joinchat/|\+)[A-Za-z0-9_-]+)', reply.text)
-            if not link_match: await event.reply("❌ No valid invite link found."); return
-            invite_link = link_match.group(0)
-            hash_part = invite_link.split('joinchat/')[1].split('?')[0] if 'joinchat/' in invite_link else invite_link.split('+')[1].split('?')[0]
-            if not hash_part: await event.reply("❌ Could not extract hash."); return
-            all_clients = self.ninja_clients.copy()
-            if not all_clients: await event.reply("❌ No ninja clients in Pool 1."); return
-            await event.reply(f"⏳ Joining group with {len(all_clients)} clients...")
-            success = 0
-            for client in all_clients:
-                try: await client(ImportChatInviteRequest(hash_part)); success += 1
-                except errors.rpcerrorlist.UserAlreadyParticipantError: success += 1
-                except FloodWaitError as e: await asyncio.sleep(e.seconds + 1); try: await client(ImportChatInviteRequest(hash_part)); success += 1
-                except: pass
-                except: pass
-                await asyncio.sleep(0.3)
-            try:
-                chat = await all_clients[0].get_entity(invite_link)
-                await event.reply(f"✅ Joined group `{chat.title}` with {success} clients. ID: `{chat.id}`")
-            except: await event.reply(f"✅ Joined with {success} clients.")
-
-        @self.bot_client.on(events.NewMessage(pattern=r"^/go2$"))
-        async def go_group2(event):
-            if event.sender_id != Config.OWNER_ID: return
-            if not event.is_reply: await event.reply("❌ `/go2` must be used in reply to an invite link."); return
-            reply = await event.get_reply_message()
-            if not reply.text: await event.reply("❌ No text in reply."); return
-            link_match = re.search(r'(https?://t\.me/(joinchat/|\+)[A-Za-z0-9_-]+)', reply.text)
-            if not link_match: await event.reply("❌ No valid invite link found."); return
-            invite_link = link_match.group(0)
-            hash_part = invite_link.split('joinchat/')[1].split('?')[0] if 'joinchat/' in invite_link else invite_link.split('+')[1].split('?')[0]
-            if not hash_part: await event.reply("❌ Could not extract hash."); return
-            all_clients = self.ninja_clients2.copy()
-            if not all_clients: await event.reply("❌ No ninja clients in Pool 2."); return
-            await event.reply(f"⏳ Joining group with {len(all_clients)} clients...")
-            success = 0
-            for client in all_clients:
-                try: await client(ImportChatInviteRequest(hash_part)); success += 1
-                except errors.rpcerrorlist.UserAlreadyParticipantError: success += 1
-                except FloodWaitError as e: await asyncio.sleep(e.seconds + 1); try: await client(ImportChatInviteRequest(hash_part)); success += 1
-                except: pass
-                except: pass
-                await asyncio.sleep(0.3)
-            try:
-                chat = await all_clients[0].get_entity(invite_link)
-                await event.reply(f"✅ Joined group `{chat.title}` with {success} clients (Pool 2). ID: `{chat.id}`")
-            except: await event.reply(f"✅ Joined with {success} clients.")
-
-        @self.bot_client.on(events.NewMessage(pattern=r"^/go3$"))
-        async def go_group3(event):
-            if event.sender_id != Config.OWNER_ID: return
-            if not event.is_reply: await event.reply("❌ `/go3` must be used in reply to an invite link."); return
-            reply = await event.get_reply_message()
-            if not reply.text: await event.reply("❌ No text in reply."); return
-            link_match = re.search(r'(https?://t\.me/(joinchat/|\+)[A-Za-z0-9_-]+)', reply.text)
-            if not link_match: await event.reply("❌ No valid invite link found."); return
-            invite_link = link_match.group(0)
-            hash_part = invite_link.split('joinchat/')[1].split('?')[0] if 'joinchat/' in invite_link else invite_link.split('+')[1].split('?')[0]
-            if not hash_part: await event.reply("❌ Could not extract hash."); return
-            all_clients = self.ninja_clients3.copy()
-            if not all_clients: await event.reply("❌ No ninja clients in Pool 3."); return
-            await event.reply(f"⏳ Joining group with {len(all_clients)} clients...")
-            success = 0
-            for client in all_clients:
-                try: await client(ImportChatInviteRequest(hash_part)); success += 1
-                except errors.rpcerrorlist.UserAlreadyParticipantError: success += 1
-                except FloodWaitError as e: await asyncio.sleep(e.seconds + 1); try: await client(ImportChatInviteRequest(hash_part)); success += 1
-                except: pass
-                except: pass
-                await asyncio.sleep(0.3)
-            try:
-                chat = await all_clients[0].get_entity(invite_link)
-                await event.reply(f"✅ Joined group `{chat.title}` with {success} clients (Pool 3). ID: `{chat.id}`")
-            except: await event.reply(f"✅ Joined with {success} clients.")
 
         # SETMATRIX & COPY
         @self.bot_client.on(events.NewMessage(pattern=r"^/setmatrix(?:\s+(.+))?$"))
