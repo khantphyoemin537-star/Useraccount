@@ -53,7 +53,7 @@ class Config:
 
     BULLY_DELAY = 0.8
     SHOOT_DELAY = 0.4
-    SPAM_DELAY = 0.2
+    SPAM_DELAY = 0.6
     TALK_DELAY = 0.5
     MAX_RETRIES = 3
 
