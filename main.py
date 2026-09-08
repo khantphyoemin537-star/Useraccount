@@ -9,6 +9,11 @@ Sovereign System – ULTIMATE FULL VERSION (Ninja Pools 1, 2, 3 + Special Pool +
 - Special Stop: "ရပ်" in Saved Messages of the Special Pool accounts.
 - Special Spam Text Management: /savespecial on/off (Owner saves texts via DM/forward).
 - All original features: save, talk, catcher bot, watchlist, taunts, spam filters, moderation, etc.
+
+UPDATES:
+- Spam loop now uses ClientPool (round‑robin + flood tracking) for Ninja Pool 1 only.
+- /spam starts spam on a predefined list of 4 groups (set via SPAM_GROUPS in Config).
+- Stop commands handle the new spam task keys.
 """
 
 import asyncio
@@ -21,7 +26,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from html import escape as escape_html
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 import pytz
 from flask import Flask
@@ -47,13 +52,21 @@ class Config:
     LEARNING_GROUP = int(os.getenv("LEARNING_GROUP", "-1003806830045"))
     TARGET_GROUP = -1003580630981
     
+    # Spam groups: ခင်ဗျား သတ်မှတ်ထားတဲ့ group ၄ ခုရဲ့ ID များ (ဥပမာ)
+    SPAM_GROUPS = [
+        -1003806830045,  # group 1
+        -1003819613443,  # group 2
+        -1004421587002,  # group 3
+        -1004358565293  # group 4
+    ]
+    
     TIMEZONE = pytz.timezone(os.getenv("TIMEZONE", "Asia/Yangon"))
     FLASK_PORT = int(os.getenv("PORT", "10000"))
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
     BULLY_DELAY = 0.8
     SHOOT_DELAY = 0.4
-    SPAM_DELAY = 0.7
+    SPAM_DELAY = 0.7      # လိုအပ်ရင် 1.0 သို့မဟုတ် 1.2 ထိ တိုးနိုင်ပါတယ်
     TALK_DELAY = 0.5
     MAX_RETRIES = 3
 
@@ -66,6 +79,7 @@ class Config:
 
 # Hardcoded Spam Text (For normal ninja pools)
 SPAM_TEXT = """ @Imjustkidding_bot , @GodMorgan_robot ,  @fuckyourwifey_bot rjsjsjsjssjsjjssjsjdjsjsjsjzjsjsjssnsnsnsndndndjsdjdndjdjdjdjdjsjdjdjdjdjdjsjsnsj """
+
 # ------------------------------------------------------------------
 #  LOGGING
 # ------------------------------------------------------------------
@@ -164,6 +178,48 @@ class DatabaseManager:
     def talk_phrases(self): return self.db["talk_phrases"]
 
 # ------------------------------------------------------------------
+#  CLIENT POOL (Round‑Robin + Flood Tracking)
+# ------------------------------------------------------------------
+class ClientPool:
+    """
+    Manages a list of TelegramClient instances.
+    - get_next_client() returns the next available client (round‑robin).
+    - Clients that hit FloodWait are marked and skipped until their wait time expires.
+    """
+    def __init__(self, clients: List[TelegramClient]):
+        self.clients = clients
+        self.index = 0
+        self.lock = asyncio.Lock()
+        self.flood_until: Dict[TelegramClient, datetime] = {}
+
+    async def get_next_client(self) -> Optional[TelegramClient]:
+        async with self.lock:
+            if not self.clients:
+                return None
+            now = datetime.now()
+            # Filter out clients that are still in flood
+            available = [c for c in self.clients if c not in self.flood_until or self.flood_until[c] < now]
+            if not available:
+                # All clients are flooded; wait for the earliest to become ready
+                earliest = min(self.flood_until.values())
+                wait = (earliest - now).total_seconds()
+                if wait > 0:
+                    await asyncio.sleep(wait + 0.5)
+                # Retry after waiting
+                return await self.get_next_client()
+            # Round‑robin over available clients
+            for i in range(len(available)):
+                idx = (self.index + i) % len(available)
+                client = available[idx]
+                self.index = (idx + 1) % len(available)
+                return client
+            return None
+
+    def mark_flood(self, client: TelegramClient, seconds: int) -> None:
+        """Mark a client as being in flood for `seconds` seconds."""
+        self.flood_until[client] = datetime.now() + timedelta(seconds=seconds)
+
+# ------------------------------------------------------------------
 #  MAIN BOT CLASS
 # ------------------------------------------------------------------
 class SovereignBot:
@@ -180,7 +236,8 @@ class SovereignBot:
         self.ninja_shoot_tasks: Dict[int, bool] = {}
         self.ninja_tracking_targets: Dict[int, int] = {}
         self.ninja_dark_passenger_targets: Dict[int, int] = {}
-        self.ninja_spam_tasks: Dict[int, bool] = {}
+        # Spam tasks now keyed by tuple of chat_ids (for multiple groups)
+        self.ninja_spam_tasks: Dict[Tuple[int, ...], bool] = {}
 
         # ---------- NINJA POOL 2 ----------
         self.ninja_clients2: List[TelegramClient] = []
@@ -190,7 +247,7 @@ class SovereignBot:
         self.ninja_shoot_tasks2: Dict[int, bool] = {}
         self.ninja_tracking_targets2: Dict[int, int] = {}
         self.ninja_dark_passenger_targets2: Dict[int, int] = {}
-        self.ninja_spam_tasks2: Dict[int, bool] = {}
+        self.ninja_spam_tasks2: Dict[Tuple[int, ...], bool] = {}
 
         # ---------- NINJA POOL 3 ----------
         self.ninja_clients3: List[TelegramClient] = []
@@ -200,7 +257,7 @@ class SovereignBot:
         self.ninja_shoot_tasks3: Dict[int, bool] = {}
         self.ninja_tracking_targets3: Dict[int, int] = {}
         self.ninja_dark_passenger_targets3: Dict[int, int] = {}
-        self.ninja_spam_tasks3: Dict[int, bool] = {}
+        self.ninja_spam_tasks3: Dict[Tuple[int, ...], bool] = {}
 
         # ---------- SPECIAL POOL ----------
         self.special_clients: List[TelegramClient] = []
@@ -287,7 +344,7 @@ class SovereignBot:
         logger.info(f"🚀 {pool_name} ready: {len(clients_list)} clients.")
 
     # --------------------------------------------------------------
-    #  SPECIAL POOL LOADING (FIXED)
+    #  SPECIAL POOL LOADING
     # --------------------------------------------------------------
     async def load_special_pool(self) -> None:
         for client in self.special_clients:
@@ -304,7 +361,7 @@ class SovereignBot:
         self.special_names.clear()
         self.special_ids.clear()
 
-        async for doc in self.db.special_pool_col.find():  # <-- FIXED
+        async for doc in self.db.special_pool_col.find():
             session_str = doc.get("session")
             if not session_str:
                 continue
@@ -395,7 +452,7 @@ class SovereignBot:
             if not target or target.id == Config.OWNER_ID:
                 return
 
-            spam_texts = await self.db.special_spam_texts.find().to_list(length=None)  # <-- FIXED
+            spam_texts = await self.db.special_spam_texts.find().to_list(length=None)
             if not spam_texts:
                 return
 
@@ -658,30 +715,52 @@ class SovereignBot:
             logger.error(f"Retry delete failed: {e}")
 
     # --------------------------------------------------------------
-    #  SPAM LOOPS
+    #  NEW SPAM LOOP (Pool 1 only, multiple groups)
     # --------------------------------------------------------------
-    async def _start_spam_loop(self, chat_id: int, pool: int):
-        task_dicts = [self.ninja_spam_tasks, self.ninja_spam_tasks2, self.ninja_spam_tasks3]
-        if task_dicts[pool-1].get(chat_id, False):
+    async def _start_spam_loop(self, chat_ids: List[int]) -> None:
+        """
+        Starts a spam loop that sends SPAM_TEXT to all given chat_ids,
+        using clients from Ninja Pool 1 in round‑robin fashion,
+        with flood tracking.
+        """
+        # Use a tuple as key for the spam task dictionary
+        key = tuple(sorted(chat_ids))
+        if self.ninja_spam_tasks.get(key, False):
+            logger.info(f"Spam loop already running for groups {chat_ids}")
             return
-        task_dicts[pool-1][chat_id] = True
+        self.ninja_spam_tasks[key] = True
+
+        pool_clients = self.ninja_clients  # Only Pool 1
+        if not pool_clients:
+            logger.warning("No clients in Ninja Pool 1; cannot start spam.")
+            return
+
+        client_pool = ClientPool(pool_clients)
 
         async def spam_loop():
-            while task_dicts[pool-1].get(chat_id, False):
-                client = await self._get_ninja_client(pool)
+            logger.info(f"🔄 Spam loop started for groups {chat_ids} with {len(pool_clients)} clients.")
+            while self.ninja_spam_tasks.get(key, False):
+                client = await client_pool.get_next_client()
                 if not client:
                     await asyncio.sleep(1)
                     continue
-                try:
-                    sent = await client.send_message(chat_id, SPAM_TEXT)
-                    await self._handle_message_sent(chat_id, sent.id)
-                    await asyncio.sleep(Config.SPAM_DELAY)
-                except FloodWaitError as e:
-                    await asyncio.sleep(e.seconds + 1)
-                except Exception as e:
-                    logger.error(f"Spam loop (Pool {pool}) error: {e}")
-                    await asyncio.sleep(2)
-            logger.info(f"🛑 Spam loop stopped for chat {chat_id} (Pool {pool})")
+                # Send one message to each group using this client
+                for chat_id in chat_ids:
+                    try:
+                        sent = await client.send_message(chat_id, SPAM_TEXT)
+                        await self._handle_message_sent(chat_id, sent.id)
+                        await asyncio.sleep(Config.SPAM_DELAY)
+                    except FloodWaitError as e:
+                        client_pool.mark_flood(client, e.seconds)
+                        logger.warning(f"Flood on {chat_id}, client {client} waiting {e.seconds}s")
+                        break  # Switch to next client for the next round
+                    except Exception as e:
+                        logger.error(f"Spam error on {chat_id}: {e}")
+                        await asyncio.sleep(1)
+                # Small pause between full rounds
+                await asyncio.sleep(0.3)
+            logger.info(f"🛑 Spam loop stopped for groups {chat_ids}")
+
         asyncio.create_task(spam_loop())
 
     # --------------------------------------------------------------
@@ -1312,25 +1391,98 @@ class SovereignBot:
                 sent = await client.send_message(chat_id, f"🔭 Tracking {mention} (ninja pool3)...", parse_mode='html')
                 await self._handle_message_sent(chat_id, sent.id)
 
-        # ======== SPAM COMMANDS ========
+        # ======== SPAM COMMANDS (UPDATED) ========
         @self.bot_client.on(events.NewMessage(pattern=r"^/spam$"))
         async def spam_cmd(event):
-            if not await self.is_allowed(event.sender_id): return
-            chat_id = event.chat_id
-            await self._start_spam_loop(chat_id, 1)
-            await event.reply(f"🗣️ Spam (Ninja Pool 1) started. (Text: {SPAM_TEXT[:30]}...)")
+            if not await self.is_allowed(event.sender_id):
+                return
+            # Use the predefined list from Config
+            groups = Config.SPAM_GROUPS
+            if not groups:
+                await event.reply("❌ No spam groups defined in Config.SPAM_GROUPS.")
+                return
+            await self._start_spam_loop(groups)
+            await event.reply(f"🗣️ Spam started on {len(groups)} groups using Ninja Pool 1.")
+
+        # Spam for pool 2 and 3 (optional, can add if needed)
         @self.bot_client.on(events.NewMessage(pattern=r"^/spam2$"))
         async def spam_cmd2(event):
-            if not await self.is_allowed(event.sender_id): return
-            chat_id = event.chat_id
-            await self._start_spam_loop(chat_id, 2)
-            await event.reply(f"🗣️ Spam (Ninja Pool 2) started. (Text: {SPAM_TEXT[:30]}...)")
+            if not await self.is_allowed(event.sender_id):
+                return
+            groups = Config.SPAM_GROUPS
+            if not groups:
+                await event.reply("❌ No spam groups defined.")
+                return
+            # Use pool 2
+            key = tuple(sorted(groups))
+            if self.ninja_spam_tasks2.get(key, False):
+                await event.reply("ℹ️ Spam already running for these groups on Pool 2.")
+                return
+            self.ninja_spam_tasks2[key] = True
+            pool_clients = self.ninja_clients2
+            if not pool_clients:
+                await event.reply("❌ No clients in Ninja Pool 2.")
+                return
+            client_pool = ClientPool(pool_clients)
+            async def spam_loop2():
+                while self.ninja_spam_tasks2.get(key, False):
+                    client = await client_pool.get_next_client()
+                    if not client:
+                        await asyncio.sleep(1)
+                        continue
+                    for chat_id in groups:
+                        try:
+                            sent = await client.send_message(chat_id, SPAM_TEXT)
+                            await self._handle_message_sent(chat_id, sent.id)
+                            await asyncio.sleep(Config.SPAM_DELAY)
+                        except FloodWaitError as e:
+                            client_pool.mark_flood(client, e.seconds)
+                            break
+                        except Exception as e:
+                            logger.error(f"Spam2 error: {e}")
+                            await asyncio.sleep(1)
+                    await asyncio.sleep(0.3)
+            asyncio.create_task(spam_loop2())
+            await event.reply(f"🗣️ Spam (Pool 2) started on {len(groups)} groups.")
+
         @self.bot_client.on(events.NewMessage(pattern=r"^/spam3$"))
         async def spam_cmd3(event):
-            if not await self.is_allowed(event.sender_id): return
-            chat_id = event.chat_id
-            await self._start_spam_loop(chat_id, 3)
-            await event.reply(f"🗣️ Spam (Ninja Pool 3) started. (Text: {SPAM_TEXT[:30]}...)")
+            if not await self.is_allowed(event.sender_id):
+                return
+            groups = Config.SPAM_GROUPS
+            if not groups:
+                await event.reply("❌ No spam groups defined.")
+                return
+            key = tuple(sorted(groups))
+            if self.ninja_spam_tasks3.get(key, False):
+                await event.reply("ℹ️ Spam already running for these groups on Pool 3.")
+                return
+            self.ninja_spam_tasks3[key] = True
+            pool_clients = self.ninja_clients3
+            if not pool_clients:
+                await event.reply("❌ No clients in Ninja Pool 3.")
+                return
+            client_pool = ClientPool(pool_clients)
+            async def spam_loop3():
+                while self.ninja_spam_tasks3.get(key, False):
+                    client = await client_pool.get_next_client()
+                    if not client:
+                        await asyncio.sleep(1)
+                        continue
+                    for chat_id in groups:
+                        try:
+                            sent = await client.send_message(chat_id, SPAM_TEXT)
+                            await self._handle_message_sent(chat_id, sent.id)
+                            await asyncio.sleep(Config.SPAM_DELAY)
+                        except FloodWaitError as e:
+                            client_pool.mark_flood(client, e.seconds)
+                            break
+                        except Exception as e:
+                            logger.error(f"Spam3 error: {e}")
+                            await asyncio.sleep(1)
+                    await asyncio.sleep(0.3)
+            asyncio.create_task(spam_loop3())
+            await event.reply(f"🗣️ Spam (Pool 3) started on {len(groups)} groups.")
 
         # ======== "ဖာသည်မသား" (Shared) ========
         @self.bot_client.on(events.NewMessage(pattern=r"^ဖာသည်မသား$"))
@@ -1385,7 +1537,7 @@ class SovereignBot:
                 await self._clear_taunt_targets(chat_id)
                 await event.reply("🧹 ဒီ Chat ထဲက အားလုံးကို ရှင်းလိုက်ပါပြီ။")
 
-        # ======== STOP COMMAND ========
+        # ======== STOP COMMAND (UPDATED) ========
         @self.bot_client.on(events.NewMessage(pattern=r"^(ရပ်|/stop)$"))
         async def stop_attack(event):
             if not await self.is_allowed(event.sender_id): return
@@ -1396,19 +1548,29 @@ class SovereignBot:
             if chat_id in self.ninja_shoot_tasks: self.ninja_shoot_tasks[chat_id] = False; stopped = True
             if chat_id in self.ninja_tracking_targets: del self.ninja_tracking_targets[chat_id]; stopped = True
             if chat_id in self.ninja_dark_passenger_targets: del self.ninja_dark_passenger_targets[chat_id]; stopped = True
-            if chat_id in self.ninja_spam_tasks: self.ninja_spam_tasks[chat_id] = False; stopped = True
+            # Spam tasks: check if any key contains this chat_id
+            for key in list(self.ninja_spam_tasks.keys()):
+                if chat_id in key:
+                    self.ninja_spam_tasks[key] = False
+                    stopped = True
             # Ninja Pool 2
             if chat_id in self.ninja_bully_tasks2: self.ninja_bully_tasks2[chat_id] = False; stopped = True
             if chat_id in self.ninja_shoot_tasks2: self.ninja_shoot_tasks2[chat_id] = False; stopped = True
             if chat_id in self.ninja_tracking_targets2: del self.ninja_tracking_targets2[chat_id]; stopped = True
             if chat_id in self.ninja_dark_passenger_targets2: del self.ninja_dark_passenger_targets2[chat_id]; stopped = True
-            if chat_id in self.ninja_spam_tasks2: self.ninja_spam_tasks2[chat_id] = False; stopped = True
+            for key in list(self.ninja_spam_tasks2.keys()):
+                if chat_id in key:
+                    self.ninja_spam_tasks2[key] = False
+                    stopped = True
             # Ninja Pool 3
             if chat_id in self.ninja_bully_tasks3: self.ninja_bully_tasks3[chat_id] = False; stopped = True
             if chat_id in self.ninja_shoot_tasks3: self.ninja_shoot_tasks3[chat_id] = False; stopped = True
             if chat_id in self.ninja_tracking_targets3: del self.ninja_tracking_targets3[chat_id]; stopped = True
             if chat_id in self.ninja_dark_passenger_targets3: del self.ninja_dark_passenger_targets3[chat_id]; stopped = True
-            if chat_id in self.ninja_spam_tasks3: self.ninja_spam_tasks3[chat_id] = False; stopped = True
+            for key in list(self.ninja_spam_tasks3.keys()):
+                if chat_id in key:
+                    self.ninja_spam_tasks3[key] = False
+                    stopped = True
             # Talk
             if chat_id in self.talk_tasks: self.talk_tasks[chat_id] = False; stopped = True
             self.reset_phrase_cycle(chat_id)
@@ -1630,7 +1792,7 @@ class SovereignBot:
             else:
                 await event.reply(f"✅ Removed from DB.")
 
-        # ======== SPECIAL POOL MANAGEMENT (FIXED) ========
+        # ======== SPECIAL POOL MANAGEMENT ========
         @self.bot_client.on(events.NewMessage(pattern=r"^/addspecial(?:\s+(.*?))?(?:\s+(.*))?$"))
         async def add_special(event):
             if event.sender_id != Config.OWNER_ID:
@@ -1650,11 +1812,11 @@ class SovereignBot:
             if not session_str or len(session_str) < 10:
                 await event.reply("❌ Invalid session string.")
                 return
-            async for doc in self.db.special_pool_col.find():  # <-- FIXED
+            async for doc in self.db.special_pool_col.find():
                 if doc.get("session") == session_str:
                     await event.reply("⚠️ This session already exists in Special Pool.")
                     return
-            await self.db.special_pool_col.insert_one({"name": name, "session": session_str})  # <-- FIXED
+            await self.db.special_pool_col.insert_one({"name": name, "session": session_str})
             client = TelegramClient(StringSession(session_str), Config.API_ID, Config.API_HASH)
             try:
                 await client.start()
@@ -1666,7 +1828,7 @@ class SovereignBot:
                 await event.reply(f"✅ '{name}' (ID: {me.id}) added to Special Pool! Total: {len(self.special_clients)}")
             except Exception as e:
                 await event.reply(f"❌ Failed: {str(e)}")
-                await self.db.special_pool_col.delete_one({"session": session_str})  # <-- FIXED
+                await self.db.special_pool_col.delete_one({"session": session_str})
 
         @self.bot_client.on(events.NewMessage(pattern=r"^/listspecial$"))
         async def list_special(event):
@@ -1689,7 +1851,7 @@ class SovereignBot:
             if event.sender_id != Config.OWNER_ID:
                 return
             target = event.pattern_match.group(1).strip()
-            pr_list = await self.db.special_pool_col.find().to_list(length=None)  # <-- FIXED
+            pr_list = await self.db.special_pool_col.find().to_list(length=None)
             idx = None
             if target.isdigit():
                 idx = int(target) - 1
@@ -1701,7 +1863,7 @@ class SovereignBot:
                 await event.reply(f"❌ Cannot find '{target}' in Special Pool.")
                 return
             removed_doc = pr_list[idx]
-            await self.db.special_pool_col.delete_one({"_id": removed_doc["_id"]})  # <-- FIXED
+            await self.db.special_pool_col.delete_one({"_id": removed_doc["_id"]})
             if idx < len(self.special_clients):
                 client = self.special_clients.pop(idx)
                 self.special_names.pop(idx)
@@ -1714,7 +1876,7 @@ class SovereignBot:
             else:
                 await event.reply(f"✅ Removed from DB.")
 
-        # ======== SPECIAL SAVE MODE (FIXED) ========
+        # ======== SPECIAL SAVE MODE ========
         @self.bot_client.on(events.NewMessage(pattern=r"^/savespecial (on|off)$"))
         async def save_special_cmd(event):
             if event.sender_id != Config.OWNER_ID:
@@ -2091,13 +2253,13 @@ class SovereignBot:
                 return
             chat_id = event.chat_id; sender_id = event.sender_id
 
-            # SPECIAL SAVE MODE (FIXED)
+            # SPECIAL SAVE MODE
             if self.special_save_mode and sender_id == Config.OWNER_ID:
                 if event.text and not event.text.startswith('/'):
                     text = event.text.strip()
                     if text:
                         try:
-                            await self.db.special_spam_texts.insert_one({"text": text})  # <-- FIXED
+                            await self.db.special_spam_texts.insert_one({"text": text})
                             await event.reply(f"✅ Special spam saved: {text[:50]}...")
                         except DuplicateKeyError:
                             await event.reply("⚠️ This text already exists.")
