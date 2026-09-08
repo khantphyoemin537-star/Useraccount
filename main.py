@@ -53,7 +53,7 @@ class Config:
 
     BULLY_DELAY = 0.8
     SHOOT_DELAY = 0.4
-    SPAM_DELAY = 0.6
+    SPAM_DELAY = 1.5
     TALK_DELAY = 0.5
     MAX_RETRIES = 3
 
@@ -65,7 +65,7 @@ class Config:
     CATCHER_BOT_ID = 6157455819
 
 # Hardcoded Spam Text (For normal ninja pools)
-SPAM_TEXT = """ @Imjustkidding_bot , @fuckyourwifey_bot rjsjsjsjssjsjjssjsjdjsjsjsjzjsjsjssnsnsnsndndndjsdjdndjdjdjdjdjsjdjdjdjdjdjsjsnsj """
+SPAM_TEXT = """ @Imjustkidding_bot , @GodMorgan_robot ,  @fuckyourwifey_bot rjsjsjsjssjsjjssjsjdjsjsjsjzjsjsjssnsnsnsndndndjsdjdndjdjdjdjdjsjdjdjdjdjdjsjsnsj """
 # ------------------------------------------------------------------
 #  LOGGING
 # ------------------------------------------------------------------
