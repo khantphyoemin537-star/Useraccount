@@ -38,7 +38,7 @@ from telethon.tl.functions.messages import ImportChatInviteRequest
 #  CONFIGURATION
 # ------------------------------------------------------------------
 class Config:
-    OWNER_ID = int(os.getenv("OWNER_ID", "6015356597"))  # <-- သင့် Telegram ID နဲ့ အစားထိုးပါ
+    OWNER_ID = int(os.getenv("OWNER_ID", "7693106830"))  # <-- သင့် Telegram ID နဲ့ အစားထိုးပါ
     MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://kkt:h1BdaMt7nxW9jTXa@cluster0.kb5fzfl.mongodb.net/?appName=Cluster0&tlsAllowInvalidCertificates=true")
     API_ID = int(os.getenv("API_ID", "35766004"))
     API_HASH = os.getenv("API_HASH", "d15b4226b81724722279bae6af69e22d")
@@ -53,7 +53,7 @@ class Config:
 
     BULLY_DELAY = 0.8
     SHOOT_DELAY = 0.4
-    SPAM_DELAY = 1.5
+    SPAM_DELAY = 0.7
     TALK_DELAY = 0.5
     MAX_RETRIES = 3
 
