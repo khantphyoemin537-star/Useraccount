@@ -66,7 +66,7 @@ class Config:
 
     BULLY_DELAY = 0.8
     SHOOT_DELAY = 0.4
-    SPAM_DELAY = 0.3     # Parallel mode အတွက် လျှော့ထားနိုင်တယ် (ဒါပေမယ့် flood ဖြစ်ရင် ပြန်တိုး)
+    SPAM_DELAY = 0.5   # Parallel mode အတွက် လျှော့ထားနိုင်တယ် (ဒါပေမယ့် flood ဖြစ်ရင် ပြန်တိုး)
     TALK_DELAY = 0.5
     MAX_RETRIES = 3
 
