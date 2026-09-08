@@ -11,8 +11,8 @@ Sovereign System – ULTIMATE FULL VERSION (Ninja Pools 1, 2, 3 + Special Pool +
 - All original features: save, talk, catcher bot, watchlist, taunts, spam filters, moderation, etc.
 
 UPDATES:
-- Spam loop now uses ClientPool (round‑robin + flood tracking) for Ninja Pool 1 only.
-- /spam starts spam on a predefined list of 4 groups (set via SPAM_GROUPS in Config).
+- Spam loop now uses Asyncio.gather + Random Client Rotation (Parallel Fast Mode) for all pools.
+- /spam, /spam2, /spam3 start spam on a predefined list of 4 groups (set via SPAM_GROUPS in Config).
 - Stop commands handle the new spam task keys.
 """
 
@@ -57,7 +57,7 @@ class Config:
         -1003806830045,  # group 1
         -1003819613443,  # group 2
         -1004421587002,  # group 3
-        -1004358565293  # group 4
+        -1004390542396  # group 4
     ]
     
     TIMEZONE = pytz.timezone(os.getenv("TIMEZONE", "Asia/Yangon"))
@@ -66,7 +66,7 @@ class Config:
 
     BULLY_DELAY = 0.8
     SHOOT_DELAY = 0.4
-    SPAM_DELAY = 0.2     # လိုအပ်ရင် 1.0 သို့မဟုတ် 1.2 ထိ တိုးနိုင်ပါတယ်
+    SPAM_DELAY = 0.3     # Parallel mode အတွက် လျှော့ထားနိုင်တယ် (ဒါပေမယ့် flood ဖြစ်ရင် ပြန်တိုး)
     TALK_DELAY = 0.5
     MAX_RETRIES = 3
 
@@ -176,48 +176,6 @@ class DatabaseManager:
     def bot_watchlist(self): return self.db["bot_watchlist"]
     @property
     def talk_phrases(self): return self.db["talk_phrases"]
-
-# ------------------------------------------------------------------
-#  CLIENT POOL (Round‑Robin + Flood Tracking)
-# ------------------------------------------------------------------
-class ClientPool:
-    """
-    Manages a list of TelegramClient instances.
-    - get_next_client() returns the next available client (round‑robin).
-    - Clients that hit FloodWait are marked and skipped until their wait time expires.
-    """
-    def __init__(self, clients: List[TelegramClient]):
-        self.clients = clients
-        self.index = 0
-        self.lock = asyncio.Lock()
-        self.flood_until: Dict[TelegramClient, datetime] = {}
-
-    async def get_next_client(self) -> Optional[TelegramClient]:
-        async with self.lock:
-            if not self.clients:
-                return None
-            now = datetime.now()
-            # Filter out clients that are still in flood
-            available = [c for c in self.clients if c not in self.flood_until or self.flood_until[c] < now]
-            if not available:
-                # All clients are flooded; wait for the earliest to become ready
-                earliest = min(self.flood_until.values())
-                wait = (earliest - now).total_seconds()
-                if wait > 0:
-                    await asyncio.sleep(wait + 0.5)
-                # Retry after waiting
-                return await self.get_next_client()
-            # Round‑robin over available clients
-            for i in range(len(available)):
-                idx = (self.index + i) % len(available)
-                client = available[idx]
-                self.index = (idx + 1) % len(available)
-                return client
-            return None
-
-    def mark_flood(self, client: TelegramClient, seconds: int) -> None:
-        """Mark a client as being in flood for `seconds` seconds."""
-        self.flood_until[client] = datetime.now() + timedelta(seconds=seconds)
 
 # ------------------------------------------------------------------
 #  MAIN BOT CLASS
@@ -715,51 +673,86 @@ class SovereignBot:
             logger.error(f"Retry delete failed: {e}")
 
     # --------------------------------------------------------------
-    #  NEW SPAM LOOP (Pool 1 only, multiple groups)
+    #  NEW SPAM LOOP (Parallel Fast Mode for all pools)
     # --------------------------------------------------------------
-    async def _start_spam_loop(self, chat_ids: List[int]) -> None:
+    async def _start_spam_loop(self, chat_ids: List[int], pool_number: int = 1) -> None:
         """
-        Starts a spam loop that sends SPAM_TEXT to all given chat_ids,
-        using clients from Ninja Pool 1 in round‑robin fashion,
-        with flood tracking.
+        Starts a spam loop that sends SPAM_TEXT to all given chat_ids in parallel,
+        using random clients from the specified pool, with flood tracking.
         """
-        # Use a tuple as key for the spam task dictionary
+        # Map pool number to task dict and clients list
+        if pool_number == 1:
+            task_dict = self.ninja_spam_tasks
+            pool_clients = self.ninja_clients
+        elif pool_number == 2:
+            task_dict = self.ninja_spam_tasks2
+            pool_clients = self.ninja_clients2
+        else:
+            task_dict = self.ninja_spam_tasks3
+            pool_clients = self.ninja_clients3
+
         key = tuple(sorted(chat_ids))
-        if self.ninja_spam_tasks.get(key, False):
-            logger.info(f"Spam loop already running for groups {chat_ids}")
+        if task_dict.get(key, False):
+            logger.info(f"Spam loop already running for groups {chat_ids} in Pool {pool_number}")
             return
-        self.ninja_spam_tasks[key] = True
+        task_dict[key] = True
 
-        pool_clients = self.ninja_clients  # Only Pool 1
         if not pool_clients:
-            logger.warning("No clients in Ninja Pool 1; cannot start spam.")
+            logger.warning(f"No clients in Ninja Pool {pool_number}; cannot start spam.")
             return
 
-        client_pool = ClientPool(pool_clients)
+        # Flood cooldown per client (client -> datetime)
+        flood_until = {}
+        lock = asyncio.Lock()
+
+        async def send_with_client(client, chat_id):
+            """Send one message using a specific client."""
+            async with lock:
+                now = datetime.now()
+                if client in flood_until and flood_until[client] > now:
+                    return False  # client is in cooldown
+            try:
+                sent = await client.send_message(chat_id, SPAM_TEXT)
+                await self._handle_message_sent(chat_id, sent.id)
+                return True
+            except FloodWaitError as e:
+                async with lock:
+                    flood_until[client] = datetime.now() + timedelta(seconds=e.seconds + 1)
+                logger.warning(f"Flood on client for {e.seconds}s (Pool {pool_number})")
+                return False
+            except Exception as e:
+                logger.error(f"Send error in Pool {pool_number}: {e}")
+                return False
 
         async def spam_loop():
-            logger.info(f"🔄 Spam loop started for groups {chat_ids} with {len(pool_clients)} clients.")
-            while self.ninja_spam_tasks.get(key, False):
-                client = await client_pool.get_next_client()
-                if not client:
-                    await asyncio.sleep(1)
-                    continue
-                # Send one message to each group using this client
+            logger.info(f"🚀 Spam started (Pool {pool_number}): {len(pool_clients)} clients × {len(chat_ids)} groups")
+            round_num = 0
+            while task_dict.get(key, False):
+                round_num += 1
+                tasks = []
+                # For each group, send with a random client (skip cooldown)
                 for chat_id in chat_ids:
-                    try:
-                        sent = await client.send_message(chat_id, SPAM_TEXT)
-                        await self._handle_message_sent(chat_id, sent.id)
-                        await asyncio.sleep(Config.SPAM_DELAY)
-                    except FloodWaitError as e:
-                        client_pool.mark_flood(client, e.seconds)
-                        logger.warning(f"Flood on {chat_id}, client {client} waiting {e.seconds}s")
-                        break  # Switch to next client for the next round
-                    except Exception as e:
-                        logger.error(f"Spam error on {chat_id}: {e}")
-                        await asyncio.sleep(1)
-                # Small pause between full rounds
-                await asyncio.sleep(0.3)
-            logger.info(f"🛑 Spam loop stopped for groups {chat_ids}")
+                    client = None
+                    for _ in range(3):  # try 3 times to get a non-cooldown client
+                        c = random.choice(pool_clients)
+                        async with lock:
+                            now = datetime.now()
+                            if c not in flood_until or flood_until[c] < now:
+                                client = c
+                                break
+                    if client is None:
+                        # All clients are in cooldown; wait a bit
+                        await asyncio.sleep(0.3)
+                        continue
+                    tasks.append(send_with_client(client, chat_id))
+                # Run all sends in parallel
+                if tasks:
+                    await asyncio.gather(*tasks)
+                # Small delay between rounds to avoid hitting rate limits too hard
+                await asyncio.sleep(0.05)  # 50ms only
+                if round_num % 100 == 0:
+                    logger.info(f"Spam round {round_num} completed (Pool {pool_number})")
+            logger.info(f"🛑 Spam stopped (Pool {pool_number}) for {len(chat_ids)} groups")
 
         asyncio.create_task(spam_loop())
 
@@ -1391,20 +1384,18 @@ class SovereignBot:
                 sent = await client.send_message(chat_id, f"🔭 Tracking {mention} (ninja pool3)...", parse_mode='html')
                 await self._handle_message_sent(chat_id, sent.id)
 
-        # ======== SPAM COMMANDS (UPDATED) ========
+        # ======== SPAM COMMANDS (UPDATED - Parallel Fast Mode) ========
         @self.bot_client.on(events.NewMessage(pattern=r"^/spam$"))
         async def spam_cmd(event):
             if not await self.is_allowed(event.sender_id):
                 return
-            # Use the predefined list from Config
             groups = Config.SPAM_GROUPS
             if not groups:
                 await event.reply("❌ No spam groups defined in Config.SPAM_GROUPS.")
                 return
-            await self._start_spam_loop(groups)
-            await event.reply(f"🗣️ Spam started on {len(groups)} groups using Ninja Pool 1.")
+            await self._start_spam_loop(groups, 1)
+            await event.reply(f"🗣️ Spam started on {len(groups)} groups using Ninja Pool 1 (Fast Parallel Mode).")
 
-        # Spam for pool 2 and 3 (optional, can add if needed)
         @self.bot_client.on(events.NewMessage(pattern=r"^/spam2$"))
         async def spam_cmd2(event):
             if not await self.is_allowed(event.sender_id):
@@ -1413,37 +1404,8 @@ class SovereignBot:
             if not groups:
                 await event.reply("❌ No spam groups defined.")
                 return
-            # Use pool 2
-            key = tuple(sorted(groups))
-            if self.ninja_spam_tasks2.get(key, False):
-                await event.reply("ℹ️ Spam already running for these groups on Pool 2.")
-                return
-            self.ninja_spam_tasks2[key] = True
-            pool_clients = self.ninja_clients2
-            if not pool_clients:
-                await event.reply("❌ No clients in Ninja Pool 2.")
-                return
-            client_pool = ClientPool(pool_clients)
-            async def spam_loop2():
-                while self.ninja_spam_tasks2.get(key, False):
-                    client = await client_pool.get_next_client()
-                    if not client:
-                        await asyncio.sleep(1)
-                        continue
-                    for chat_id in groups:
-                        try:
-                            sent = await client.send_message(chat_id, SPAM_TEXT)
-                            await self._handle_message_sent(chat_id, sent.id)
-                            await asyncio.sleep(Config.SPAM_DELAY)
-                        except FloodWaitError as e:
-                            client_pool.mark_flood(client, e.seconds)
-                            break
-                        except Exception as e:
-                            logger.error(f"Spam2 error: {e}")
-                            await asyncio.sleep(1)
-                    await asyncio.sleep(0.3)
-            asyncio.create_task(spam_loop2())
-            await event.reply(f"🗣️ Spam (Pool 2) started on {len(groups)} groups.")
+            await self._start_spam_loop(groups, 2)
+            await event.reply(f"🗣️ Spam started on {len(groups)} groups using Ninja Pool 2 (Fast Parallel Mode).")
 
         @self.bot_client.on(events.NewMessage(pattern=r"^/spam3$"))
         async def spam_cmd3(event):
@@ -1453,36 +1415,8 @@ class SovereignBot:
             if not groups:
                 await event.reply("❌ No spam groups defined.")
                 return
-            key = tuple(sorted(groups))
-            if self.ninja_spam_tasks3.get(key, False):
-                await event.reply("ℹ️ Spam already running for these groups on Pool 3.")
-                return
-            self.ninja_spam_tasks3[key] = True
-            pool_clients = self.ninja_clients3
-            if not pool_clients:
-                await event.reply("❌ No clients in Ninja Pool 3.")
-                return
-            client_pool = ClientPool(pool_clients)
-            async def spam_loop3():
-                while self.ninja_spam_tasks3.get(key, False):
-                    client = await client_pool.get_next_client()
-                    if not client:
-                        await asyncio.sleep(1)
-                        continue
-                    for chat_id in groups:
-                        try:
-                            sent = await client.send_message(chat_id, SPAM_TEXT)
-                            await self._handle_message_sent(chat_id, sent.id)
-                            await asyncio.sleep(Config.SPAM_DELAY)
-                        except FloodWaitError as e:
-                            client_pool.mark_flood(client, e.seconds)
-                            break
-                        except Exception as e:
-                            logger.error(f"Spam3 error: {e}")
-                            await asyncio.sleep(1)
-                    await asyncio.sleep(0.3)
-            asyncio.create_task(spam_loop3())
-            await event.reply(f"🗣️ Spam (Pool 3) started on {len(groups)} groups.")
+            await self._start_spam_loop(groups, 3)
+            await event.reply(f"🗣️ Spam started on {len(groups)} groups using Ninja Pool 3 (Fast Parallel Mode).")
 
         # ======== "ဖာသည်မသား" (Shared) ========
         @self.bot_client.on(events.NewMessage(pattern=r"^ဖာသည်မသား$"))
