@@ -56,12 +56,12 @@ class Config:
 
     BULLY_DELAY = 1
     SHOOT_DELAY = 1
-    SPAM_DELAY = 1
-    TALK_DELAY = 1          # per‑client cooldown in parallel mode
+    SPAM_DELAY = 3
+    TALK_DELAY = 2          # per‑client cooldown in parallel mode
     MAX_RETRIES = 3
 
 # Hardcoded Spam Text (used by /spam commands)
-SPAM_TEXT = """ @Imjustkidding_bot , @GodMorgan_robot ,  @fuckyourwifey_bot rjsjsjsjssjsjjssjsjdjsjsjsjzjsjsjssnsnsnsndndndjsdjdndjdjdjdjdjsjdjdjdjdjdjsjsnsj """
+SPAM_TEXT = """ @Imjustkidding_bot , @GodMorgan_robot ,  @fuckyourwifey_bot Wqjsdhtf@@*2&wwifjgjffdwjeqjdfesjewfndjsczajqeuqosnxbshwuuremdtpaanzxnss """
 
 # ------------------------------------------------------------------
 #  LOGGING
