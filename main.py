@@ -2,18 +2,12 @@
 # -*- coding: utf-8 -*-
 
 """
-Sovereign System – ULTIMATE FULL VERSION (Ninja Pools 1, 2, 3 + Special Pool + Stealth Attack)
-- 3 Independent Ninja Pools (collections: ninja_col, ninja_col2, ninja_col3)
-- Special Pool (collection: special_pool_col) for fully stealth attacks.
-- Special Attack Trigger: "သေမယ်နော်" (Reply to target) – NO PUBLIC REPLY, runs continuously.
-- Special Stop: "ရပ်" in Saved Messages of the Special Pool accounts.
-- Special Spam Text Management: /savespecial on/off (Owner saves texts via DM/forward).
-- All original features: save, talk, catcher bot, watchlist, taunts, spam filters, moderation, etc.
-
-UPDATES:
-- Spam loop now uses Asyncio.gather + Random Client Rotation (Parallel Fast Mode) for all pools.
-- /spam, /spam2, /spam3 start spam on a predefined list of 4 groups (set via SPAM_GROUPS in Config).
-- Stop commands handle the new spam task keys.
+Sovereign System – CLEAN & FAST (Final)
+- Only Ninja Pool 1 attack commands: /bully, /shoot, /track, /mark
+- Only one join command: /go (uses Ninja Pool 1)
+- Removed moderation, pool 2/3 attack commands, and extra listing commands.
+- Improved /talk: parallel sending using all ninja clients.
+- Fixed /listninja: shows online count.
 """
 
 import asyncio
@@ -32,52 +26,41 @@ import pytz
 from flask import Flask
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from pymongo.errors import ConnectionFailure, OperationFailure, DuplicateKeyError
-from telethon import TelegramClient, events, errors, Button
+from telethon import TelegramClient, events, errors
 from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
-from telethon.tl.functions.channels import GetParticipantsRequest
-from telethon.tl.types import ChannelParticipantsAdmins
 from telethon.tl.functions.messages import ImportChatInviteRequest
 
 # ------------------------------------------------------------------
 #  CONFIGURATION
 # ------------------------------------------------------------------
 class Config:
-    OWNER_ID = int(os.getenv("OWNER_ID", "7693106830"))  # <-- သင့် Telegram ID နဲ့ အစားထိုးပါ
+    OWNER_ID = int(os.getenv("OWNER_ID", "7693106830"))
     MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://kkt:h1BdaMt7nxW9jTXa@cluster0.kb5fzfl.mongodb.net/?appName=Cluster0&tlsAllowInvalidCertificates=true")
     API_ID = int(os.getenv("API_ID", "35766004"))
     API_HASH = os.getenv("API_HASH", "d15b4226b81724722279bae6af69e22d")
     BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN", "8111794244:AAGurFdkxV_KrahEYJemMo-hoQkN1mJJKlU")
     
     LEARNING_GROUP = int(os.getenv("LEARNING_GROUP", "-1003806830045"))
-    TARGET_GROUP = -1003580630981
-    
-    # Spam groups: ခင်ဗျား သတ်မှတ်ထားတဲ့ group ၄ ခုရဲ့ ID များ (ဥပမာ)
+    # Spam groups (4 groups)
     SPAM_GROUPS = [
-        -1003806830045,  # group 1
-        -1003819613443,  # group 2
-        -1004421587002,  # group 3
-        -1004390542396  # group 4
+        -1003806830045,
+        -1003819613443,
+        -1004421587002,
+        -1004390542396
     ]
     
     TIMEZONE = pytz.timezone(os.getenv("TIMEZONE", "Asia/Yangon"))
     FLASK_PORT = int(os.getenv("PORT", "10000"))
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
-    BULLY_DELAY = 0.8
-    SHOOT_DELAY = 0.4
-    SPAM_DELAY = 0.5   # Parallel mode အတွက် လျှော့ထားနိုင်တယ် (ဒါပေမယ့် flood ဖြစ်ရင် ပြန်တိုး)
-    TALK_DELAY = 0.5
+    BULLY_DELAY = 1
+    SHOOT_DELAY = 1
+    SPAM_DELAY = 1
+    TALK_DELAY = 1          # per‑client cooldown in parallel mode
     MAX_RETRIES = 3
 
-    SOURCE_GROUP_ID = int(os.getenv("SOURCE_GROUP_ID", "-1003877873337"))
-    TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID", "-1003754813090"))
-    CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/freevipallinone")
-
-    CATCHER_CHAT = -1004437409107
-    CATCHER_BOT_ID = 6157455819
-
-# Hardcoded Spam Text (For normal ninja pools)
+# Hardcoded Spam Text (used by /spam commands)
 SPAM_TEXT = """ @Imjustkidding_bot , @GodMorgan_robot ,  @fuckyourwifey_bot rjsjsjsjssjsjjssjsjdjsjsjsjzjsjsjssnsnsnsndndndjsdjdndjdjdjdjdjsjdjdjdjdjdjsjsnsj """
 
 # ------------------------------------------------------------------
@@ -88,7 +71,7 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("SovereignMerged")
+logger = logging.getLogger("SovereignClean")
 
 # ------------------------------------------------------------------
 #  FLASK KEEP‑ALIVE
@@ -97,7 +80,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route("/")
 def health_check() -> str:
-    return "Sovereign Merged System is operational."
+    return "Sovereign Clean System is operational."
 
 def run_flask() -> None:
     flask_app.run(host="0.0.0.0", port=Config.FLASK_PORT, threaded=True)
@@ -163,19 +146,9 @@ class DatabaseManager:
     @property
     def special_spam_texts(self): return self.db["special_spam_texts"]
     @property
-    def target_bots_col(self): return self.db["target_bots_col"]
-    @property
-    def tomboy_col(self): return self.db["tomboy_col"]
+    def talk_phrases(self): return self.db["talk_phrases"]
     @property
     def taunt_targets(self): return self.db["taunt_targets"]
-    @property
-    def muted_registry(self): return self.db["muted_registry"]
-    @property
-    def channel_subscribers(self): return self.db["channel_subscribers"]
-    @property
-    def bot_watchlist(self): return self.db["bot_watchlist"]
-    @property
-    def talk_phrases(self): return self.db["talk_phrases"]
 
 # ------------------------------------------------------------------
 #  MAIN BOT CLASS
@@ -194,27 +167,18 @@ class SovereignBot:
         self.ninja_shoot_tasks: Dict[int, bool] = {}
         self.ninja_tracking_targets: Dict[int, int] = {}
         self.ninja_dark_passenger_targets: Dict[int, int] = {}
-        # Spam tasks now keyed by tuple of chat_ids (for multiple groups)
         self.ninja_spam_tasks: Dict[Tuple[int, ...], bool] = {}
 
-        # ---------- NINJA POOL 2 ----------
+        # ---------- NINJA POOL 2 (only for spam and talk) ----------
         self.ninja_clients2: List[TelegramClient] = []
         self.ninja_names2: List[str] = []
         self.ninja_ids2: Set[int] = set()
-        self.ninja_bully_tasks2: Dict[int, bool] = {}
-        self.ninja_shoot_tasks2: Dict[int, bool] = {}
-        self.ninja_tracking_targets2: Dict[int, int] = {}
-        self.ninja_dark_passenger_targets2: Dict[int, int] = {}
         self.ninja_spam_tasks2: Dict[Tuple[int, ...], bool] = {}
 
-        # ---------- NINJA POOL 3 ----------
+        # ---------- NINJA POOL 3 (only for spam and talk) ----------
         self.ninja_clients3: List[TelegramClient] = []
         self.ninja_names3: List[str] = []
         self.ninja_ids3: Set[int] = set()
-        self.ninja_bully_tasks3: Dict[int, bool] = {}
-        self.ninja_shoot_tasks3: Dict[int, bool] = {}
-        self.ninja_tracking_targets3: Dict[int, int] = {}
-        self.ninja_dark_passenger_targets3: Dict[int, int] = {}
         self.ninja_spam_tasks3: Dict[Tuple[int, ...], bool] = {}
 
         # ---------- SPECIAL POOL ----------
@@ -226,7 +190,7 @@ class SovereignBot:
         self.special_target_chat: Optional[int] = None
         self.special_target_mention: Optional[str] = None
         self.special_spam_texts_list: List[str] = []
-        self.special_save_mode = False  # For /savespecial on/off
+        self.special_save_mode = False
 
         # Shared taunt targets
         self.delete_and_taunt_targets: Dict[int, Set[int]] = {}
@@ -237,28 +201,17 @@ class SovereignBot:
         self.phrase_lists: Dict[int, List[str]] = {}
         self.phrase_indices: Dict[int, int] = {}
 
-        self.is_copy_active = False
-        self.matrix_group_id: Optional[int] = None
-        self.target_group_id: Optional[int] = None
-        self.bad_users: List[tuple] = []
-        self.check_in_progress = False
-
         self.sticker_spam_data = {}
         self.char_spam_data = {}
         self.admin_warned_sticker = set()
         self.admin_warned_char = set()
         self.admin_cache = {}
 
-        self.bot_watchlist_cache: Dict[int, Set[int]] = {}
-
         # Random Talk
         self.talk_tasks: Dict[int, bool] = {}
         self.talk_phrases_cache: Dict[int, List[str]] = {}
         self.talk_indices: Dict[int, int] = {}
         self.talk_source_group: Dict[int, int] = {}
-
-        # Catcher bot
-        self.catcher_processing: Set[int] = set()
 
         # AUTO CLEANUP
         self.auto_cleanup = False
@@ -380,13 +333,12 @@ class SovereignBot:
         chat_id = event.chat_id
         text = event.raw_text or ""
 
-        # --- 1. STOP COMMAND (Saved Messages only) ---
+        # STOP command in Saved Messages
         if chat_id == event.sender_id and text == "ရပ်":
             if self.special_attack_active:
                 self.special_attack_active = False
                 if self.special_attack_task and not self.special_attack_task.done():
                     self.special_attack_task.cancel()
-                
                 client = await self._get_special_client()
                 if client:
                     try:
@@ -396,7 +348,7 @@ class SovereignBot:
                 logger.info("Special attack stopped via Saved Messages.")
             return
 
-        # --- 2. TRIGGER COMMAND (Chats/Groups, MUST be reply) ---
+        # TRIGGER: reply to a target with "သေမယ်နော်"
         if text == "သေမယ်နော်" and event.is_reply:
             if not self.special_clients:
                 return
@@ -423,7 +375,7 @@ class SovereignBot:
             if client:
                 try:
                     await client.send_message(
-                        client._self_id, 
+                        client._self_id,
                         f"🔥 Special attack started on {self.special_target_mention} in chat {chat_id}"
                     )
                 except Exception:
@@ -438,8 +390,8 @@ class SovereignBot:
                     text_to_send = random.choice(self.special_spam_texts_list)
                     try:
                         await client.send_message(
-                            self.special_target_chat, 
-                            f"{self.special_target_mention} {text_to_send}", 
+                            self.special_target_chat,
+                            f"{self.special_target_mention} {text_to_send}",
                             parse_mode='html'
                         )
                         await asyncio.sleep(Config.SPAM_DELAY)
@@ -452,43 +404,6 @@ class SovereignBot:
 
             self.special_attack_task = asyncio.create_task(attack_loop())
             return
-
-    # --------------------------------------------------------------
-    #  BOT WATCHLIST & TAUNTS
-    # --------------------------------------------------------------
-    async def load_bot_watchlist(self) -> None:
-        doc = await self.db.bot_watchlist.find_one({"chat_id": Config.TARGET_GROUP})
-        if doc:
-            self.bot_watchlist_cache[Config.TARGET_GROUP] = set(doc.get("bot_ids", []))
-        else:
-            self.bot_watchlist_cache[Config.TARGET_GROUP] = set()
-
-    async def load_taunt_targets(self) -> None:
-        async for doc in self.db.taunt_targets.find():
-            chat_id = doc["chat_id"]
-            target_ids = doc.get("target_ids", [])
-            if target_ids:
-                self.delete_and_taunt_targets[chat_id] = set(target_ids)
-
-    async def _add_taunt_target(self, chat_id: int, target_id: int) -> None:
-        if chat_id not in self.delete_and_taunt_targets:
-            self.delete_and_taunt_targets[chat_id] = set()
-        self.delete_and_taunt_targets[chat_id].add(target_id)
-        await self.db.taunt_targets.update_one({"chat_id": chat_id}, {"$addToSet": {"target_ids": target_id}}, upsert=True)
-
-    async def _remove_taunt_target(self, chat_id: int, target_id: int) -> None:
-        if chat_id in self.delete_and_taunt_targets:
-            self.delete_and_taunt_targets[chat_id].discard(target_id)
-            if not self.delete_and_taunt_targets[chat_id]:
-                del self.delete_and_taunt_targets[chat_id]
-                await self.db.taunt_targets.delete_one({"chat_id": chat_id})
-            else:
-                await self.db.taunt_targets.update_one({"chat_id": chat_id}, {"$pull": {"target_ids": target_id}})
-
-    async def _clear_taunt_targets(self, chat_id: int) -> None:
-        if chat_id in self.delete_and_taunt_targets:
-            del self.delete_and_taunt_targets[chat_id]
-            await self.db.taunt_targets.delete_one({"chat_id": chat_id})
 
     # --------------------------------------------------------------
     #  ADMIN & HELPERS
@@ -504,17 +419,10 @@ class SovereignBot:
             return user_id in self.admin_cache[chat_id]["ids"]
         return False
 
-    async def check_ban_rights(self, chat_id: int, user_id: int) -> bool:
-        if user_id == Config.OWNER_ID:
-            return True
-        try:
-            permissions = await self.bot_client.get_permissions(chat_id, user_id)
-            return permissions.is_admin and permissions.ban_users
-        except:
-            return False
-
     async def _update_admin_cache(self, chat_id: int):
         try:
+            from telethon.tl.functions.channels import GetParticipantsRequest
+            from telethon.tl.types import ChannelParticipantsAdmins
             admins = await self.bot_client(GetParticipantsRequest(channel=chat_id, filter=ChannelParticipantsAdmins(), offset=0, limit=200, hash=0))
             admin_ids = {p.user_id for p in admins.participants}
             self.admin_cache[chat_id] = {"ids": admin_ids, "expiry": time.time() + 300}
@@ -522,19 +430,6 @@ class SovereignBot:
         except Exception as e:
             logger.error(f"Error updating admin cache for {chat_id}: {e}")
             return set()
-
-    async def get_target_user(self, event, arg: Optional[str] = None):
-        if event.is_reply:
-            reply_msg = await event.get_reply_message()
-            return await event.client.get_entity(reply_msg.sender_id)
-        if arg:
-            try:
-                return await event.client.get_entity(arg)
-            except:
-                await event.reply("⚠️ User not found.")
-                return None
-        await event.reply("⚠️ Reply to a user or provide username/ID.")
-        return None
 
     def format_mention(self, user_id: int, name: str) -> str:
         return f"<a href='tg://user?id={user_id}'>{escape_html(name)}</a>"
@@ -591,6 +486,7 @@ class SovereignBot:
         self.phrase_lists.pop(chat_id, None)
         self.phrase_indices.pop(chat_id, None)
 
+    # ---------- Talk phrase management ----------
     async def fetch_talk_phrases(self, source_group_id: int) -> List[str]:
         docs = await self.db.talk_phrases.find({"group_id": source_group_id}).to_list(length=10000)
         if docs:
@@ -615,6 +511,9 @@ class SovereignBot:
         self.talk_indices[source_group_id] = idx
         return phrase
 
+    # --------------------------------------------------------------
+    #  IMPROVED TALK LOOP (Parallel using all Ninja clients)
+    # --------------------------------------------------------------
     async def start_talk_loop(self, chat_id: int, source_group_id: int):
         if chat_id in self.talk_tasks and self.talk_tasks[chat_id]:
             return
@@ -622,22 +521,43 @@ class SovereignBot:
         self.talk_source_group[chat_id] = source_group_id
         if source_group_id not in self.talk_phrases_cache:
             await self.fetch_talk_phrases(source_group_id)
+
+        # Gather all ninja clients from all pools
+        all_clients = self.ninja_clients + self.ninja_clients2 + self.ninja_clients3
+        if not all_clients:
+            logger.warning("No ninja clients available for talk.")
+            return
+
+        random.shuffle(all_clients)
+        next_send = {client: datetime.now() for client in all_clients}
+
+        async def send_one(client, phrase):
+            try:
+                sent = await client.send_message(chat_id, phrase)
+                await self._handle_message_sent(chat_id, sent.id)
+                next_send[client] = datetime.now() + timedelta(seconds=Config.TALK_DELAY)
+            except FloodWaitError as e:
+                next_send[client] = datetime.now() + timedelta(seconds=e.seconds + 1)
+                logger.warning(f"Talk flood on {client}: {e.seconds}s")
+            except Exception as e:
+                logger.error(f"Talk send error: {e}")
+                next_send[client] = datetime.now() + timedelta(seconds=1)
+
         async def talk_loop():
+            logger.info(f"🚀 Talk started in chat {chat_id} using {len(all_clients)} clients")
             while self.talk_tasks.get(chat_id, False):
-                client = await self._get_ninja_client(1)
-                if not client:
-                    await asyncio.sleep(1)
-                    continue
-                phrase = await self.get_next_talk_phrase(source_group_id)
-                try:
-                    sent = await client.send_message(chat_id, phrase)
-                    await self._handle_message_sent(chat_id, sent.id)
-                    await asyncio.sleep(Config.TALK_DELAY)
-                except FloodWaitError as e:
-                    await asyncio.sleep(e.seconds + 1)
-                except Exception as e:
-                    logger.error(f"Talk loop error: {e}")
-                    await asyncio.sleep(2)
+                tasks = []
+                for client in all_clients:
+                    now = datetime.now()
+                    if now < next_send[client]:
+                        continue
+                    phrase = await self.get_next_talk_phrase(source_group_id)
+                    tasks.append(send_one(client, phrase))
+                if tasks:
+                    await asyncio.gather(*tasks)
+                await asyncio.sleep(0.05)
+            logger.info(f"🛑 Talk stopped in chat {chat_id}")
+
         asyncio.create_task(talk_loop())
 
     # --------------------------------------------------------------
@@ -673,14 +593,9 @@ class SovereignBot:
             logger.error(f"Retry delete failed: {e}")
 
     # --------------------------------------------------------------
-    #  NEW SPAM LOOP (Parallel Fast Mode for all pools)
+    #  SPAM LOOP (Parallel Fast Mode)
     # --------------------------------------------------------------
     async def _start_spam_loop(self, chat_ids: List[int], pool_number: int = 1) -> None:
-        """
-        Starts a spam loop that sends SPAM_TEXT to all given chat_ids in parallel,
-        using random clients from the specified pool, with flood tracking.
-        """
-        # Map pool number to task dict and clients list
         if pool_number == 1:
             task_dict = self.ninja_spam_tasks
             pool_clients = self.ninja_clients
@@ -701,16 +616,14 @@ class SovereignBot:
             logger.warning(f"No clients in Ninja Pool {pool_number}; cannot start spam.")
             return
 
-        # Flood cooldown per client (client -> datetime)
         flood_until = {}
         lock = asyncio.Lock()
 
         async def send_with_client(client, chat_id):
-            """Send one message using a specific client."""
             async with lock:
                 now = datetime.now()
                 if client in flood_until and flood_until[client] > now:
-                    return False  # client is in cooldown
+                    return False
             try:
                 sent = await client.send_message(chat_id, SPAM_TEXT)
                 await self._handle_message_sent(chat_id, sent.id)
@@ -730,10 +643,9 @@ class SovereignBot:
             while task_dict.get(key, False):
                 round_num += 1
                 tasks = []
-                # For each group, send with a random client (skip cooldown)
                 for chat_id in chat_ids:
                     client = None
-                    for _ in range(3):  # try 3 times to get a non-cooldown client
+                    for _ in range(3):
                         c = random.choice(pool_clients)
                         async with lock:
                             now = datetime.now()
@@ -741,15 +653,12 @@ class SovereignBot:
                                 client = c
                                 break
                     if client is None:
-                        # All clients are in cooldown; wait a bit
                         await asyncio.sleep(0.3)
                         continue
                     tasks.append(send_with_client(client, chat_id))
-                # Run all sends in parallel
                 if tasks:
                     await asyncio.gather(*tasks)
-                # Small delay between rounds to avoid hitting rate limits too hard
-                await asyncio.sleep(0.05)  # 50ms only
+                await asyncio.sleep(0.05)
                 if round_num % 100 == 0:
                     logger.info(f"Spam round {round_num} completed (Pool {pool_number})")
             logger.info(f"🛑 Spam stopped (Pool {pool_number}) for {len(chat_ids)} groups")
@@ -924,156 +833,6 @@ class SovereignBot:
                     pass
 
     # --------------------------------------------------------------
-    #  MODERATION COMMANDS
-    # --------------------------------------------------------------
-    async def mute_user(self, event):
-        if not await self.check_admin(event.chat_id, event.sender_id):
-            return
-        target_id = None
-        args_text = event.pattern_match.group(1) if hasattr(event.pattern_match, 'group') else None
-        if event.is_reply:
-            reply_msg = await event.get_reply_message()
-            target_id = reply_msg.sender_id
-        else:
-            if args_text:
-                target_str = args_text.strip().split()[0]
-                if target_str.isdigit():
-                    target_id = int(target_str)
-                else:
-                    try:
-                        user_entity = await event.client.get_entity(target_str)
-                        target_id = user_entity.id
-                    except Exception:
-                        await event.reply("⚠️ User not found.")
-                        return
-            else:
-                await event.reply("⚠️ Usage: <code>/mute</code> (reply) or <code>/mute [@username]</code>")
-                return
-        if not target_id:
-            return
-        bot_me = await event.client.get_me()
-        if target_id == bot_me.id or target_id == Config.OWNER_ID:
-            await event.reply("❌ Cannot mute the bot or the owner.")
-            return
-        try:
-            await event.client.edit_permissions(
-                event.chat_id, target_id,
-                send_messages=False, send_media=False, send_stickers=False, send_gifs=False
-            )
-            user_entity = await event.client.get_entity(target_id)
-            target_name = f"{user_entity.first_name} {user_entity.last_name or ''}".strip()
-            mention = self.format_mention(target_id, target_name)
-            await event.reply(f"<b>MUTE OPERATION SUCCESS!</b>\n<b>{mention}</b> has been silenced <b>Permanently</b>.", parse_mode='html')
-        except Exception as e:
-            await event.reply(f"❌ Error: {str(e)}")
-
-    async def unmute_user(self, event):
-        if not await self.check_ban_rights(event.chat_id, event.sender_id):
-            return
-        target_user = await self.get_target_user(event, event.pattern_match.group(1) if hasattr(event.pattern_match, 'group') else None)
-        if not target_user:
-            return
-        try:
-            await self.bot_client.edit_permissions(event.chat_id, target_user.id, send_messages=True)
-            await self.db.muted_registry.delete_one({"chat_id": event.chat_id, "user_id": target_user.id})
-            target_name = f"{getattr(target_user, 'first_name', 'User')} {getattr(target_user, 'last_name', '') or ''}".strip()
-            mention = self.format_mention(target_user.id, target_name)
-            await event.reply(f"🌌 <b>UNMUTE OPERATION</b>\n🔊 <b>Target:</b> {mention}\n⚡ <b>Status:</b> <code>Voice Restored</code>", parse_mode='html')
-        except Exception as e:
-            logger.error(f"Unmute Error: {e}")
-
-    async def ban_user(self, event):
-        if not await self.check_ban_rights(event.chat_id, event.sender_id):
-            return
-        target_user = await self.get_target_user(event, event.pattern_match.group(1) if hasattr(event.pattern_match, 'group') else None)
-        if not target_user:
-            return
-        try:
-            await self.bot_client.edit_permissions(event.chat_id, target_user.id, view_messages=False)
-            target_name = f"{getattr(target_user, 'first_name', 'User')} {getattr(target_user, 'last_name', '') or ''}".strip()
-            mention = self.format_mention(target_user.id, target_name)
-            await event.reply(f"🌌 <b>BAN OPERATION</b>\n🚫 <b>Target:</b> {mention}\n⚡ <b>Status:</b> <code>Exiled / Perm-Banned</code>", parse_mode='html')
-        except Exception as e:
-            logger.error(f"Ban Error: {e}")
-
-    async def unban_user(self, event):
-        if not await self.check_ban_rights(event.chat_id, event.sender_id):
-            return
-        target_user = await self.get_target_user(event, event.pattern_match.group(1) if hasattr(event.pattern_match, 'group') else None)
-        if not target_user:
-            return
-        try:
-            await self.bot_client.edit_permissions(event.chat_id, target_user.id, view_messages=True)
-            target_name = f"{getattr(target_user, 'first_name', 'User')} {getattr(target_user, 'last_name', '') or ''}".strip()
-            mention = self.format_mention(target_user.id, target_name)
-            await event.reply(f"🌌 <b>UNBAN OPERATION</b>\n✅ <b>Target:</b> {mention}\n⚡ <b>Status:</b> <code>Ban Lifted</code>", parse_mode='html')
-        except Exception as e:
-            logger.error(f"Unban Error: {e}")
-
-    async def kick_user(self, event):
-        if not await self.check_ban_rights(event.chat_id, event.sender_id):
-            return
-        target_user = await self.get_target_user(event, event.pattern_match.group(1) if hasattr(event.pattern_match, 'group') else None)
-        if not target_user:
-            return
-        try:
-            await self.bot_client.edit_permissions(event.chat_id, target_user.id, view_messages=False)
-            await self.bot_client.edit_permissions(event.chat_id, target_user.id, view_messages=True)
-            target_name = f"{getattr(target_user, 'first_name', 'User')} {getattr(target_user, 'last_name', '') or ''}".strip()
-            mention = self.format_mention(target_user.id, target_name)
-            await event.reply(f"🌌 <b>KICK OPERATION</b>\n💨 <b>Target:</b> {mention}\n⚡ <b>Status:</b> <code>Removed / Kicked</code>", parse_mode='html')
-        except Exception as e:
-            logger.error(f"Kick Error: {e}")
-
-    # --------------------------------------------------------------
-    #  CHANNEL ADMIN
-    # --------------------------------------------------------------
-    async def forward_media_to_channel(self, event):
-        if event.sender_id != Config.OWNER_ID:
-            return
-        if event.chat_id != Config.SOURCE_GROUP_ID:
-            return
-        if not (event.photo or event.video):
-            return
-        caption = event.raw_text or ""
-        bot_username = (await self.bot_client.get_me()).username or "YourBotUsername"
-        buttons = [[Button.url("အသစ်တင်တိုင်းသိနိုင်ရန်နှိပ်ပါ", f"https://t.me/{bot_username}?start=channel_alert")]]
-        try:
-            await self.bot_client.send_message(Config.TARGET_CHANNEL_ID, caption, file=event.media, parse_mode='html', buttons=buttons)
-        except Exception as e:
-            logger.error(f"Forward error: {e}")
-
-    async def start_handler(self, event):
-        payload = event.pattern_match.group(1) if hasattr(event.pattern_match, 'group') and event.pattern_match.group(1) else ""
-        user_id = event.sender_id
-        if payload == "channel_alert":
-            await self.db.channel_subscribers.update_one({"user_id": user_id}, {"$set": {"user_id": user_id, "subscribed_at": time.time()}}, upsert=True)
-            await event.reply("✅ သင်သည် Channel မှာ အသစ်တင်တိုင်း အသိပေးချက် ရရှိမည် ဖြစ်ပါသည်။\n📢 နောက်အသစ်များကို စောင့်မျှော်နေပါ။", parse_mode='html')
-        else:
-            await event.reply("👋 မင်္ဂလာပါ။\nChannel အသစ်များအတွက် အသိပေးချက် ရယူလိုပါက အောက်ပါ Link ကိုနှိပ်ပါ။\nhttps://t.me/YourBot?start=channel_alert", parse_mode='html')
-
-    async def notify_all_subscribers(self, event):
-        if event.sender_id != Config.OWNER_ID:
-            return
-        message = event.pattern_match.group(1) if hasattr(event.pattern_match, 'group') and event.pattern_match.group(1) else None
-        if not message:
-            return await event.reply("⚠️ Usage: <code>/notifyall [message]</code>", parse_mode='html')
-        subscribers = await self.db.channel_subscribers.find({}).to_list(length=None)
-        if not subscribers:
-            return await event.reply("❌ No subscribers yet.", parse_mode='html')
-        buttons = [[Button.url("📢 ချန်နယ်သို့သွားရန်", Config.CHANNEL_LINK)]]
-        success = 0
-        for doc in subscribers:
-            user_id = doc["user_id"]
-            try:
-                await self.bot_client.send_message(user_id, f"📢 <b>Channel Update</b>\n\n{message}", parse_mode='html', buttons=buttons)
-                success += 1
-                await asyncio.sleep(0.1)
-            except Exception:
-                pass
-        await event.reply(f"✅ Notification sent to {success} subscribers.", parse_mode='html')
-
-    # --------------------------------------------------------------
     #  COMMAND HANDLERS
     # --------------------------------------------------------------
     def _register_handlers(self):
@@ -1230,161 +989,7 @@ class SovereignBot:
             sent = await event.reply(f"🔭 Tracking {mention}...", parse_mode='html')
             await self._handle_message_sent(chat_id, sent.id)
 
-        # ======== ATTACK COMMANDS – NINJA POOL 2 ========
-        @self.bot_client.on(events.NewMessage(pattern=r"^(/bully2|အနိုင်ကျင့်2)$"))
-        async def ninja_bully2(event):
-            if not await self.is_allowed(event.sender_id): return
-            await self.bot_client.send_message(Config.LEARNING_GROUP, f"🔫 {self.format_mention(event.sender_id, (await event.get_sender()).first_name or 'User')} used /bully2", parse_mode='html')
-            try: await event.delete()
-            except: pass
-            await event.reply("OK")
-            reply = await event.get_reply_message()
-            if not reply: return
-            target = await reply.get_sender()
-            if target.id == Config.OWNER_ID: return
-            chat_id = event.chat_id; target_id = target.id; mention = self.format_mention(target_id, target.first_name or "Target")
-            self.reset_phrase_cycle(chat_id); self.ninja_bully_tasks2[chat_id] = True
-            async def bully_loop2():
-                while self.ninja_bully_tasks2.get(chat_id, False):
-                    client = await self._get_ninja_client(2)
-                    if not client: await asyncio.sleep(1); continue
-                    phrase = await self.get_next_phrase(chat_id)
-                    try:
-                        sent = await client.send_message(chat_id, f"{mention} {phrase}", reply_to=reply.id, parse_mode='html')
-                        await self._handle_message_sent(chat_id, sent.id)
-                        await asyncio.sleep(Config.BULLY_DELAY)
-                    except FloodWaitError as e: await asyncio.sleep(e.seconds + 1)
-                    except Exception as e: logger.error(f"Bully2 error: {e}"); await asyncio.sleep(1)
-            asyncio.create_task(bully_loop2())
-
-        @self.bot_client.on(events.NewMessage(pattern=r"^(/mark2|မှတ်2|/shoot2|ပစ်2)$"))
-        async def attack_cmds2(event):
-            if not await self.is_allowed(event.sender_id): return
-            await self.bot_client.send_message(Config.LEARNING_GROUP, f"🔫 {self.format_mention(event.sender_id, (await event.get_sender()).first_name or 'User')} used {event.text}", parse_mode='html')
-            try: await event.delete()
-            except: pass
-            await event.reply("OK")
-            reply = await event.get_reply_message()
-            if not reply or reply.sender_id == Config.OWNER_ID: return
-            chat_id = event.chat_id; target = await reply.get_sender(); target_id = target.id; mention = self.format_mention(target_id, target.first_name or "Target")
-            if event.text in ("/shoot2", "ပစ်2"):
-                self.ninja_shoot_tasks2[chat_id] = True; self.reset_phrase_cycle(chat_id)
-                async def shoot_loop2():
-                    while self.ninja_shoot_tasks2.get(chat_id, False):
-                        client = await self._get_ninja_client(2)
-                        if not client: await asyncio.sleep(1); continue
-                        phrase = await self.get_next_phrase(chat_id)
-                        try:
-                            sent = await client.send_message(chat_id, f"{mention} {phrase}", parse_mode='html')
-                            await self._handle_message_sent(chat_id, sent.id)
-                            await asyncio.sleep(Config.SHOOT_DELAY)
-                        except FloodWaitError as e: await asyncio.sleep(e.seconds + 1)
-                        except Exception as e: logger.error(f"Shoot2 error: {e}"); await asyncio.sleep(1)
-                asyncio.create_task(shoot_loop2())
-            else:
-                sender = await event.get_sender()
-                sender_mention = self.format_mention(event.sender_id, sender.first_name or "Unknown")
-                client = await self._get_ninja_client(2)
-                if client:
-                    sent = await client.send_message(chat_id, f"🎯 {sender_mention} marked {mention} (ninja pool2).", parse_mode='html')
-                    await self._handle_message_sent(chat_id, sent.id)
-
-        @self.bot_client.on(events.NewMessage(pattern=r"^(/track2|ခြေရာ2)$"))
-        async def track2(event):
-            if not await self.is_allowed(event.sender_id): return
-            await self.bot_client.send_message(Config.LEARNING_GROUP, f"🎯 {self.format_mention(event.sender_id, (await event.get_sender()).first_name or 'User')} used /track2", parse_mode='html')
-            try: await event.delete()
-            except: pass
-            await event.reply("OK")
-            reply = await event.get_reply_message()
-            if not reply or reply.sender_id == Config.OWNER_ID: return
-            target = await reply.get_sender(); chat_id = event.chat_id
-            self.ninja_tracking_targets2[chat_id] = target.id
-            mention = self.format_mention(target.id, target.first_name or "Target")
-            self.reset_phrase_cycle(chat_id)
-            client = await self._get_ninja_client(2)
-            if client:
-                sent = await client.send_message(chat_id, f"🔭 Tracking {mention} (ninja pool2)...", parse_mode='html')
-                await self._handle_message_sent(chat_id, sent.id)
-
-        # ======== ATTACK COMMANDS – NINJA POOL 3 ========
-        @self.bot_client.on(events.NewMessage(pattern=r"^(/bully3|အနိုင်ကျင့်3)$"))
-        async def ninja_bully3(event):
-            if not await self.is_allowed(event.sender_id): return
-            await self.bot_client.send_message(Config.LEARNING_GROUP, f"🔫 {self.format_mention(event.sender_id, (await event.get_sender()).first_name or 'User')} used /bully3", parse_mode='html')
-            try: await event.delete()
-            except: pass
-            await event.reply("OK")
-            reply = await event.get_reply_message()
-            if not reply: return
-            target = await reply.get_sender()
-            if target.id == Config.OWNER_ID: return
-            chat_id = event.chat_id; target_id = target.id; mention = self.format_mention(target_id, target.first_name or "Target")
-            self.reset_phrase_cycle(chat_id); self.ninja_bully_tasks3[chat_id] = True
-            async def bully_loop3():
-                while self.ninja_bully_tasks3.get(chat_id, False):
-                    client = await self._get_ninja_client(3)
-                    if not client: await asyncio.sleep(1); continue
-                    phrase = await self.get_next_phrase(chat_id)
-                    try:
-                        sent = await client.send_message(chat_id, f"{mention} {phrase}", reply_to=reply.id, parse_mode='html')
-                        await self._handle_message_sent(chat_id, sent.id)
-                        await asyncio.sleep(Config.BULLY_DELAY)
-                    except FloodWaitError as e: await asyncio.sleep(e.seconds + 1)
-                    except Exception as e: logger.error(f"Bully3 error: {e}"); await asyncio.sleep(1)
-            asyncio.create_task(bully_loop3())
-
-        @self.bot_client.on(events.NewMessage(pattern=r"^(/mark3|မှတ်3|/shoot3|ပစ်3)$"))
-        async def attack_cmds3(event):
-            if not await self.is_allowed(event.sender_id): return
-            await self.bot_client.send_message(Config.LEARNING_GROUP, f"🔫 {self.format_mention(event.sender_id, (await event.get_sender()).first_name or 'User')} used {event.text}", parse_mode='html')
-            try: await event.delete()
-            except: pass
-            await event.reply("OK")
-            reply = await event.get_reply_message()
-            if not reply or reply.sender_id == Config.OWNER_ID: return
-            chat_id = event.chat_id; target = await reply.get_sender(); target_id = target.id; mention = self.format_mention(target_id, target.first_name or "Target")
-            if event.text in ("/shoot3", "ပစ်3"):
-                self.ninja_shoot_tasks3[chat_id] = True; self.reset_phrase_cycle(chat_id)
-                async def shoot_loop3():
-                    while self.ninja_shoot_tasks3.get(chat_id, False):
-                        client = await self._get_ninja_client(3)
-                        if not client: await asyncio.sleep(1); continue
-                        phrase = await self.get_next_phrase(chat_id)
-                        try:
-                            sent = await client.send_message(chat_id, f"{mention} {phrase}", parse_mode='html')
-                            await self._handle_message_sent(chat_id, sent.id)
-                            await asyncio.sleep(Config.SHOOT_DELAY)
-                        except FloodWaitError as e: await asyncio.sleep(e.seconds + 1)
-                        except Exception as e: logger.error(f"Shoot3 error: {e}"); await asyncio.sleep(1)
-                asyncio.create_task(shoot_loop3())
-            else:
-                sender = await event.get_sender()
-                sender_mention = self.format_mention(event.sender_id, sender.first_name or "Unknown")
-                client = await self._get_ninja_client(3)
-                if client:
-                    sent = await client.send_message(chat_id, f"🎯 {sender_mention} marked {mention} (ninja pool3).", parse_mode='html')
-                    await self._handle_message_sent(chat_id, sent.id)
-
-        @self.bot_client.on(events.NewMessage(pattern=r"^(/track3|ခြေရာ3)$"))
-        async def track3(event):
-            if not await self.is_allowed(event.sender_id): return
-            await self.bot_client.send_message(Config.LEARNING_GROUP, f"🎯 {self.format_mention(event.sender_id, (await event.get_sender()).first_name or 'User')} used /track3", parse_mode='html')
-            try: await event.delete()
-            except: pass
-            await event.reply("OK")
-            reply = await event.get_reply_message()
-            if not reply or reply.sender_id == Config.OWNER_ID: return
-            target = await reply.get_sender(); chat_id = event.chat_id
-            self.ninja_tracking_targets3[chat_id] = target.id
-            mention = self.format_mention(target.id, target.first_name or "Target")
-            self.reset_phrase_cycle(chat_id)
-            client = await self._get_ninja_client(3)
-            if client:
-                sent = await client.send_message(chat_id, f"🔭 Tracking {mention} (ninja pool3)...", parse_mode='html')
-                await self._handle_message_sent(chat_id, sent.id)
-
-        # ======== SPAM COMMANDS (UPDATED - Parallel Fast Mode) ========
+        # ======== SPAM COMMANDS ========
         @self.bot_client.on(events.NewMessage(pattern=r"^/spam$"))
         async def spam_cmd(event):
             if not await self.is_allowed(event.sender_id):
@@ -1418,7 +1023,7 @@ class SovereignBot:
             await self._start_spam_loop(groups, 3)
             await event.reply(f"🗣️ Spam started on {len(groups)} groups using Ninja Pool 3 (Fast Parallel Mode).")
 
-        # ======== "ဖာသည်မသား" (Shared) ========
+        # ======== TAUNT ========
         @self.bot_client.on(events.NewMessage(pattern=r"^ဖာသည်မသား$"))
         async def delete_and_taunt(event):
             if not await self.is_allowed(event.sender_id): return
@@ -1441,7 +1046,6 @@ class SovereignBot:
                     await self._handle_message_sent(chat_id, sent.id)
                 except: pass
 
-        # ======== REMOVE / CLEAR TAUNTS ========
         @self.bot_client.on(events.NewMessage(pattern=r"^/remove_taunt(?:\s+(\d+))?$"))
         async def remove_taunt(event):
             if not await self.is_allowed(event.sender_id): return
@@ -1471,36 +1075,27 @@ class SovereignBot:
                 await self._clear_taunt_targets(chat_id)
                 await event.reply("🧹 ဒီ Chat ထဲက အားလုံးကို ရှင်းလိုက်ပါပြီ။")
 
-        # ======== STOP COMMAND (UPDATED) ========
+        # ======== STOP ========
         @self.bot_client.on(events.NewMessage(pattern=r"^(ရပ်|/stop)$"))
         async def stop_attack(event):
             if not await self.is_allowed(event.sender_id): return
             chat_id = event.chat_id
             stopped = False
-            # Ninja Pool 1
+            # Pool 1
             if chat_id in self.ninja_bully_tasks: self.ninja_bully_tasks[chat_id] = False; stopped = True
             if chat_id in self.ninja_shoot_tasks: self.ninja_shoot_tasks[chat_id] = False; stopped = True
             if chat_id in self.ninja_tracking_targets: del self.ninja_tracking_targets[chat_id]; stopped = True
             if chat_id in self.ninja_dark_passenger_targets: del self.ninja_dark_passenger_targets[chat_id]; stopped = True
-            # Spam tasks: check if any key contains this chat_id
             for key in list(self.ninja_spam_tasks.keys()):
                 if chat_id in key:
                     self.ninja_spam_tasks[key] = False
                     stopped = True
-            # Ninja Pool 2
-            if chat_id in self.ninja_bully_tasks2: self.ninja_bully_tasks2[chat_id] = False; stopped = True
-            if chat_id in self.ninja_shoot_tasks2: self.ninja_shoot_tasks2[chat_id] = False; stopped = True
-            if chat_id in self.ninja_tracking_targets2: del self.ninja_tracking_targets2[chat_id]; stopped = True
-            if chat_id in self.ninja_dark_passenger_targets2: del self.ninja_dark_passenger_targets2[chat_id]; stopped = True
+            # Pool 2
             for key in list(self.ninja_spam_tasks2.keys()):
                 if chat_id in key:
                     self.ninja_spam_tasks2[key] = False
                     stopped = True
-            # Ninja Pool 3
-            if chat_id in self.ninja_bully_tasks3: self.ninja_bully_tasks3[chat_id] = False; stopped = True
-            if chat_id in self.ninja_shoot_tasks3: self.ninja_shoot_tasks3[chat_id] = False; stopped = True
-            if chat_id in self.ninja_tracking_targets3: del self.ninja_tracking_targets3[chat_id]; stopped = True
-            if chat_id in self.ninja_dark_passenger_targets3: del self.ninja_dark_passenger_targets3[chat_id]; stopped = True
+            # Pool 3
             for key in list(self.ninja_spam_tasks3.keys()):
                 if chat_id in key:
                     self.ninja_spam_tasks3[key] = False
@@ -1512,6 +1107,68 @@ class SovereignBot:
                 await event.reply("🛑 All active attacks (bully/shoot/track/spam/talk) stopped in this chat for all ninja pools.")
             else:
                 await event.reply("ℹ️ No active attacks to stop.")
+
+        # ======== TALK PHRASE MANAGEMENT ========
+        @self.bot_client.on(events.NewMessage(pattern=r"^/addtalkphrase(?:\s+(.+))?$"))
+        async def add_talk_phrase(event):
+            if event.sender_id != Config.OWNER_ID:
+                return
+            text = event.pattern_match.group(1)
+            if not text and event.is_reply:
+                reply = await event.get_reply_message()
+                if reply and reply.text:
+                    text = reply.text.strip()
+            if not text:
+                await event.reply("❌ Usage: `/addtalkphrase <text>` or reply to a message.")
+                return
+            group_id = 0  # default
+            try:
+                await self.db.talk_phrases.update_one({"group_id": group_id, "text": text}, {"$set": {"group_id": group_id, "text": text}}, upsert=True)
+                await event.reply(f"✅ Talk phrase added (group {group_id}).")
+                self.talk_phrases_cache.pop(group_id, None)
+            except DuplicateKeyError:
+                await event.reply("⚠️ Phrase already exists.")
+            except Exception as e:
+                await event.reply(f"❌ Error: {e}")
+
+        @self.bot_client.on(events.NewMessage(pattern=r"^/listtalkphrases$"))
+        async def list_talk_phrases(event):
+            if event.sender_id != Config.OWNER_ID:
+                return
+            group_id = 0
+            docs = await self.db.talk_phrases.find({"group_id": group_id}).to_list(length=100)
+            if not docs:
+                await event.reply("📭 No talk phrases.")
+                return
+            lines = [f"{i+1}. {d['text']}" for i, d in enumerate(docs)]
+            await event.reply("📝 **Talk Phrases (group 0)**\n\n" + "\n".join(lines[:30]), parse_mode='markdown')
+
+        # ======== /talk (improved parallel) ========
+        @self.bot_client.on(events.NewMessage(pattern=r"^/talk(?:\s+(-?\d+))?$"))
+        async def talk_command(event):
+            if not await self.is_allowed(event.sender_id): return
+            chat_id = event.chat_id
+            source_group_id = event.pattern_match.group(1)
+            if source_group_id:
+                source_group_id = int(source_group_id)
+            else:
+                source_group_id = 0
+            count = await self.db.talk_phrases.count_documents({"group_id": source_group_id})
+            if count == 0:
+                await event.reply(f"❌ No phrases for group {source_group_id}.")
+                return
+            await self.start_talk_loop(chat_id, source_group_id)
+            await event.reply(f"🗣️ Talk started using group {source_group_id} (parallel mode with all ninja clients).")
+
+        @self.bot_client.on(events.NewMessage(pattern=r"^/stoptalk$"))
+        async def stoptalk(event):
+            if not await self.is_allowed(event.sender_id): return
+            chat_id = event.chat_id
+            if chat_id in self.talk_tasks:
+                self.talk_tasks[chat_id] = False
+                await event.reply("🛑 Talk stopped.")
+            else:
+                await event.reply("ℹ️ No active talk.")
 
         # ======== NINJA POOL MANAGEMENT – POOL 1 ========
         @self.bot_client.on(events.NewMessage(pattern=r"^/addninja(?:\s+(.*?))?(?:\s+(.*))?$"))
@@ -1551,13 +1208,16 @@ class SovereignBot:
             if not self.ninja_clients:
                 await event.reply("📭 No Ninjas active in Pool 1.")
                 return
-            lines = [f"👥 **Ninja Pool 1 ({len(self.ninja_clients)})**"]
+            online = 0
+            lines = [f"👥 **Ninja Pool 1 ({len(self.ninja_clients)} loaded)**"]
             for i, (client, name) in enumerate(zip(self.ninja_clients, self.ninja_names)):
                 try:
                     me = await client.get_me()
-                    lines.append(f"  {i+1}. **{name}** – @{me.username} (ID: {me.id})")
+                    online += 1
+                    lines.append(f"  {i+1}. **{name}** – @{me.username} (ID: {me.id}) ✅")
                 except:
-                    lines.append(f"  {i+1}. **{name}** – (offline)")
+                    lines.append(f"  {i+1}. **{name}** – (offline) ❌")
+            lines.append(f"\n📊 Online: {online}/{len(self.ninja_clients)}")
             await event.reply("\n".join(lines), parse_mode='markdown')
 
         @self.bot_client.on(events.NewMessage(pattern=r"^/removeninja\s+(.+)$"))
@@ -1616,20 +1276,7 @@ class SovereignBot:
                 await event.reply(f"❌ Failed: {str(e)}")
                 await self.db.ninja_col2.delete_one({"session": session_str})
 
-        @self.bot_client.on(events.NewMessage(pattern=r"^/listninja2$"))
-        async def list_ninja2(event):
-            if event.sender_id != Config.OWNER_ID: return
-            if not self.ninja_clients2:
-                await event.reply("📭 No Ninjas active in Pool 2.")
-                return
-            lines = [f"👥 **Ninja Pool 2 ({len(self.ninja_clients2)})**"]
-            for i, (client, name) in enumerate(zip(self.ninja_clients2, self.ninja_names2)):
-                try:
-                    me = await client.get_me()
-                    lines.append(f"  {i+1}. **{name}** – @{me.username} (ID: {me.id})")
-                except:
-                    lines.append(f"  {i+1}. **{name}** – (offline)")
-            await event.reply("\n".join(lines), parse_mode='markdown')
+        # Removed /listninja2 and /listninja3 as requested
 
         @self.bot_client.on(events.NewMessage(pattern=r"^/removeninja2\s+(.+)$"))
         async def remove_ninja2(event):
@@ -1687,20 +1334,7 @@ class SovereignBot:
                 await event.reply(f"❌ Failed: {str(e)}")
                 await self.db.ninja_col3.delete_one({"session": session_str})
 
-        @self.bot_client.on(events.NewMessage(pattern=r"^/listninja3$"))
-        async def list_ninja3(event):
-            if event.sender_id != Config.OWNER_ID: return
-            if not self.ninja_clients3:
-                await event.reply("📭 No Ninjas active in Pool 3.")
-                return
-            lines = [f"👥 **Ninja Pool 3 ({len(self.ninja_clients3)})**"]
-            for i, (client, name) in enumerate(zip(self.ninja_clients3, self.ninja_names3)):
-                try:
-                    me = await client.get_me()
-                    lines.append(f"  {i+1}. **{name}** – @{me.username} (ID: {me.id})")
-                except:
-                    lines.append(f"  {i+1}. **{name}** – (offline)")
-            await event.reply("\n".join(lines), parse_mode='markdown')
+        # Removed /listninja3
 
         @self.bot_client.on(events.NewMessage(pattern=r"^/removeninja3\s+(.+)$"))
         async def remove_ninja3(event):
@@ -1823,19 +1457,7 @@ class SovereignBot:
                 self.special_save_mode = False
                 await event.reply("❌ Special Save Mode: OFF")
 
-        # ======== COPY MODE ========
-        @self.bot_client.on(events.NewMessage(pattern=r"^/copyon$"))
-        async def copyon(event):
-            if event.sender_id != Config.OWNER_ID: return
-            self.is_copy_active = True
-            await event.reply("🎯 Copy Mode: ON")
-        @self.bot_client.on(events.NewMessage(pattern=r"^/copyoff$"))
-        async def copyoff(event):
-            if event.sender_id != Config.OWNER_ID: return
-            self.is_copy_active = False
-            await event.reply("🔇 Copy Mode: OFF.")
-
-        # ======== GROUP MANAGEMENT – NINJA POOLS 1, 2, 3 ========
+        # ======== /go (Join group using Ninja Pool 1) ========
         @self.bot_client.on(events.NewMessage(pattern=r"^/go$"))
         async def go_group(event):
             if event.sender_id != Config.OWNER_ID: return
@@ -1883,122 +1505,6 @@ class SovereignBot:
             except:
                 await event.reply(f"✅ Joined with {success} clients, but couldn't fetch ID.")
 
-        @self.bot_client.on(events.NewMessage(pattern=r"^/go2$"))
-        async def go_group2(event):
-            if event.sender_id != Config.OWNER_ID: return
-            if not event.is_reply:
-                await event.reply("❌ `/go2` must be used in reply to an invite link.")
-                return
-            reply = await event.get_reply_message()
-            if not reply.text:
-                await event.reply("❌ No text in reply.")
-                return
-            link_match = re.search(r'(https?://t\.me/(joinchat/|\+)[A-Za-z0-9_-]+)', reply.text)
-            if not link_match:
-                await event.reply("❌ No valid invite link found.")
-                return
-            invite_link = link_match.group(0)
-            if 'joinchat/' in invite_link:
-                hash_part = invite_link.split('joinchat/')[1].split('?')[0]
-            elif '+' in invite_link:
-                hash_part = invite_link.split('+')[1].split('?')[0]
-            else:
-                hash_part = None
-            if not hash_part:
-                await event.reply("❌ Could not extract hash.")
-                return
-            all_clients = self.ninja_clients2.copy()
-            if not all_clients:
-                await event.reply("❌ No ninja clients in Pool 2.")
-                return
-            await event.reply(f"⏳ Joining group with {len(all_clients)} clients (Ninja Pool 2)...")
-            success = 0
-            for client in all_clients:
-                try:
-                    await client(ImportChatInviteRequest(hash_part)); success += 1
-                except errors.rpcerrorlist.UserAlreadyParticipantError: success += 1
-                except FloodWaitError as e:
-                    await asyncio.sleep(e.seconds + 1)
-                    try:
-                        await client(ImportChatInviteRequest(hash_part)); success += 1
-                    except: pass
-                except Exception as e: logger.error(f"Join error: {e}")
-                await asyncio.sleep(0.3)
-            try:
-                chat = await all_clients[0].get_entity(invite_link)
-                await event.reply(f"✅ Joined group `{chat.title}` with {success} clients (Ninja Pool 2). ID: `{chat.id}`")
-            except:
-                await event.reply(f"✅ Joined with {success} clients (Ninja Pool 2), but couldn't fetch ID.")
-
-        @self.bot_client.on(events.NewMessage(pattern=r"^/go3$"))
-        async def go_group3(event):
-            if event.sender_id != Config.OWNER_ID: return
-            if not event.is_reply:
-                await event.reply("❌ `/go3` must be used in reply to an invite link.")
-                return
-            reply = await event.get_reply_message()
-            if not reply.text:
-                await event.reply("❌ No text in reply.")
-                return
-            link_match = re.search(r'(https?://t\.me/(joinchat/|\+)[A-Za-z0-9_-]+)', reply.text)
-            if not link_match:
-                await event.reply("❌ No valid invite link found.")
-                return
-            invite_link = link_match.group(0)
-            if 'joinchat/' in invite_link:
-                hash_part = invite_link.split('joinchat/')[1].split('?')[0]
-            elif '+' in invite_link:
-                hash_part = invite_link.split('+')[1].split('?')[0]
-            else:
-                hash_part = None
-            if not hash_part:
-                await event.reply("❌ Could not extract hash.")
-                return
-            all_clients = self.ninja_clients3.copy()
-            if not all_clients:
-                await event.reply("❌ No ninja clients in Pool 3.")
-                return
-            await event.reply(f"⏳ Joining group with {len(all_clients)} clients (Ninja Pool 3)...")
-            success = 0
-            for client in all_clients:
-                try:
-                    await client(ImportChatInviteRequest(hash_part)); success += 1
-                except errors.rpcerrorlist.UserAlreadyParticipantError: success += 1
-                except FloodWaitError as e:
-                    await asyncio.sleep(e.seconds + 1)
-                    try:
-                        await client(ImportChatInviteRequest(hash_part)); success += 1
-                    except: pass
-                except Exception as e: logger.error(f"Join error: {e}")
-                await asyncio.sleep(0.3)
-            try:
-                chat = await all_clients[0].get_entity(invite_link)
-                await event.reply(f"✅ Joined group `{chat.title}` with {success} clients (Ninja Pool 3). ID: `{chat.id}`")
-            except:
-                await event.reply(f"✅ Joined with {success} clients (Ninja Pool 3), but couldn't fetch ID.")
-
-        # ======== SETMATRIX ========
-        @self.bot_client.on(events.NewMessage(pattern=r"^/setmatrix(?:\s+(.+))?$"))
-        async def set_matrix(event):
-            if event.sender_id != Config.OWNER_ID: return
-            args = event.message.text.split(maxsplit=1)
-            if len(args) < 2:
-                await event.reply(f"❌ Usage: `/setmatrix <group_id>`\nExample: `/setmatrix -1001234567890`")
-                return
-            target = args[1].strip()
-            resolver = self.ninja_clients[0] if self.ninja_clients else None
-            if not resolver:
-                await event.reply("❌ No ninja client available to resolve ID. Please add at least one Ninja first.")
-                return
-            try:
-                entity_ref = int(target) if target.lstrip('-').isdigit() else target
-                entity = await resolver.get_entity(entity_ref)
-                self.matrix_group_id = entity.id
-                await self.db.marcuz_col.update_one({"key": "matrix_group_id"}, {"$set": {"value": self.matrix_group_id}}, upsert=True)
-                await event.reply(f"✅ Matrix Group set to `{entity.title}` (ID: `{self.matrix_group_id}`)")
-            except Exception as e:
-                await event.reply(f"❌ Failed to set matrix group: {e}")
-
         # ======== STATUS ========
         @self.bot_client.on(events.NewMessage(pattern=r"^/status$"))
         async def status_cmd(event):
@@ -2029,154 +1535,33 @@ class SovereignBot:
             result = await self.db.allowed_users.delete_one({"user_id": target_id})
             await event.reply("✅ Removed" if result.deleted_count else "⚠️ Not found")
 
-        # ======== MODERATION HANDLERS ========
-        @self.bot_client.on(events.NewMessage(pattern=r"^/mute(?:\s+(.*))?$"))
-        async def handler_mute(event): await self.mute_user(event)
-        @self.bot_client.on(events.NewMessage(pattern=r"^/unmute(?:\s+(.*))?$"))
-        async def handler_unmute(event): await self.unmute_user(event)
-        @self.bot_client.on(events.NewMessage(pattern=r"^/ban(?:\s+(.*))?$"))
-        async def handler_ban(event): await self.ban_user(event)
-        @self.bot_client.on(events.NewMessage(pattern=r"^/unban(?:\s+(.*))?$"))
-        async def handler_unban(event): await self.unban_user(event)
-        @self.bot_client.on(events.NewMessage(pattern=r"^/kick(?:\s+(.*))?$"))
-        async def handler_kick(event): await self.kick_user(event)
+        # ======== TAUNT HELPERS ========
+        async def _add_taunt_target(self, chat_id: int, target_id: int) -> None:
+            if chat_id not in self.delete_and_taunt_targets:
+                self.delete_and_taunt_targets[chat_id] = set()
+            self.delete_and_taunt_targets[chat_id].add(target_id)
+            await self.db.taunt_targets.update_one({"chat_id": chat_id}, {"$addToSet": {"target_ids": target_id}}, upsert=True)
 
-        # ======== CHANNEL ADMIN ========
-        @self.bot_client.on(events.NewMessage(pattern=r"^/start(?:\s+(\S+))?$"))
-        async def handler_start(event): await self.start_handler(event)
-        @self.bot_client.on(events.NewMessage(pattern=r"^/notifyall(?:\s+(.+))?$"))
-        async def handler_notify(event): await self.notify_all_subscribers(event)
-        @self.bot_client.on(events.NewMessage(incoming=True))
-        async def handler_forward_media(event): await self.forward_media_to_channel(event)
-
-        # ======== BOT WATCHLIST ========
-        @self.bot_client.on(events.NewMessage(pattern=r"^/delete\s+(\d+)$"))
-        async def delete_bot_command(event):
-            if event.sender_id != Config.OWNER_ID: return
-            if event.chat_id != Config.TARGET_GROUP: return
-            bot_id = int(event.pattern_match.group(1))
-            await self.db.bot_watchlist.update_one({"chat_id": event.chat_id}, {"$addToSet": {"bot_ids": bot_id}}, upsert=True)
-            if event.chat_id not in self.bot_watchlist_cache: self.bot_watchlist_cache[event.chat_id] = set()
-            self.bot_watchlist_cache[event.chat_id].add(bot_id)
-            await event.reply(f"✅ Bot ID `{bot_id}` will be deleted automatically (5s delay).")
-        @self.bot_client.on(events.NewMessage(pattern=r"^/delete_remove\s+(\d+)$"))
-        async def delete_bot_remove(event):
-            if event.sender_id != Config.OWNER_ID: return
-            if event.chat_id != Config.TARGET_GROUP: return
-            bot_id = int(event.pattern_match.group(1))
-            await self.db.bot_watchlist.update_one({"chat_id": event.chat_id}, {"$pull": {"bot_ids": bot_id}})
-            if event.chat_id in self.bot_watchlist_cache: self.bot_watchlist_cache[event.chat_id].discard(bot_id)
-            await event.reply(f"✅ Bot ID `{bot_id}` removed.")
-
-        # ======== RANDOM TALK ========
-        @self.bot_client.on(events.NewMessage(pattern=r"^/savetalk(?:\s+(.+))?$"))
-        async def savetalk(event):
-            if event.sender_id != Config.OWNER_ID: return
-            link = event.pattern_match.group(1)
-            if not link and event.is_reply:
-                reply = await event.get_reply_message()
-                if reply and reply.text:
-                    link = reply.text.strip()
-            if not link:
-                await event.reply("❌ Usage: `/savetalk <group_link>`")
-                return
-            link_match = re.search(r'(https?://t\.me/(joinchat/|\+)[A-Za-z0-9_-]+)', link)
-            if not link_match:
-                await event.reply("❌ Invalid invite link.")
-                return
-            invite_link = link_match.group(0)
-            if 'joinchat/' in invite_link:
-                hash_part = invite_link.split('joinchat/')[1].split('?')[0]
-            elif '+' in invite_link:
-                hash_part = invite_link.split('+')[1].split('?')[0]
-            else:
-                await event.reply("❌ Could not parse hash.")
-                return
-            all_clients = self.ninja_clients.copy()
-            if not all_clients:
-                await event.reply("❌ No ninja clients.")
-                return
-            group_id = None; group_title = None
-            for client in all_clients:
-                try:
-                    chat = await client.get_entity(invite_link)
-                    group_id = chat.id; group_title = chat.title; break
-                except: continue
-            if group_id is None:
-                joined = 0
-                for client in all_clients:
-                    try:
-                        await client(ImportChatInviteRequest(hash_part)); joined += 1
-                    except errors.rpcerrorlist.UserAlreadyParticipantError: joined += 1
-                    except: pass
-                    await asyncio.sleep(0.3)
-                if joined == 0:
-                    await event.reply("❌ Could not join.")
-                    return
-                for client in all_clients:
-                    try:
-                        chat = await client.get_entity(invite_link)
-                        group_id = chat.id; group_title = chat.title; break
-                    except: continue
-                if group_id is None:
-                    await event.reply("❌ Joined but couldn't fetch info.")
-                    return
-            await event.reply(f"✅ Found `{group_title}`. Saving messages...")
-            saved = 0
-            try:
-                client_to_use = None
-                for client in all_clients:
-                    try:
-                        async for msg in client.iter_messages(group_id, limit=1):
-                            break
-                        client_to_use = client; break
-                    except: continue
-                if client_to_use is None:
-                    await event.reply("❌ No client can read.")
-                    return
-                async for msg in client_to_use.iter_messages(group_id, limit=10000):
-                    if msg.text and not msg.text.startswith('/'):
-                        text = msg.text.strip()
-                        if text:
-                            try:
-                                await self.db.talk_phrases.update_one({"group_id": group_id, "text": text}, {"$set": {"group_id": group_id, "text": text}}, upsert=True)
-                                saved += 1
-                            except DuplicateKeyError: pass
-                            except Exception as e: logger.error(f"Talk save error: {e}")
-                    if saved % 100 == 0: await asyncio.sleep(0.1)
-            except Exception as e:
-                await event.reply(f"⚠️ Error: {e}")
-                return
-            await event.reply(f"✅ Saved {saved} phrases from `{group_title}` (ID: {group_id}). Use `/talk {group_id}`")
-
-        @self.bot_client.on(events.NewMessage(pattern=r"^/talk(?:\s+(-?\d+))?$"))
-        async def talk_command(event):
-            if not await self.is_allowed(event.sender_id): return
-            chat_id = event.chat_id
-            source_group_id = event.pattern_match.group(1)
-            if not source_group_id:
-                doc = await self.db.talk_phrases.find_one(sort=[("_id", -1)])
-                if doc: source_group_id = doc.get("group_id")
+        async def _remove_taunt_target(self, chat_id: int, target_id: int) -> None:
+            if chat_id in self.delete_and_taunt_targets:
+                self.delete_and_taunt_targets[chat_id].discard(target_id)
+                if not self.delete_and_taunt_targets[chat_id]:
+                    del self.delete_and_taunt_targets[chat_id]
+                    await self.db.taunt_targets.delete_one({"chat_id": chat_id})
                 else:
-                    await event.reply("❌ No talk phrases saved.")
-                    return
-            else: source_group_id = int(source_group_id)
-            count = await self.db.talk_phrases.count_documents({"group_id": source_group_id})
-            if count == 0:
-                await event.reply(f"❌ No phrases for group {source_group_id}.")
-                return
-            await self.start_talk_loop(chat_id, source_group_id)
-            await event.reply(f"🗣️ Talk started using group {source_group_id}.")
+                    await self.db.taunt_targets.update_one({"chat_id": chat_id}, {"$pull": {"target_ids": target_id}})
 
-        @self.bot_client.on(events.NewMessage(pattern=r"^/stoptalk$"))
-        async def stoptalk(event):
-            if not await self.is_allowed(event.sender_id): return
-            chat_id = event.chat_id
-            if chat_id in self.talk_tasks:
-                self.talk_tasks[chat_id] = False
-                await event.reply("🛑 Talk stopped.")
-            else:
-                await event.reply("ℹ️ No active talk.")
+        async def _clear_taunt_targets(self, chat_id: int) -> None:
+            if chat_id in self.delete_and_taunt_targets:
+                del self.delete_and_taunt_targets[chat_id]
+                await self.db.taunt_targets.delete_one({"chat_id": chat_id})
+
+        async def load_taunt_targets(self) -> None:
+            async for doc in self.db.taunt_targets.find():
+                chat_id = doc["chat_id"]
+                target_ids = doc.get("target_ids", [])
+                if target_ids:
+                    self.delete_and_taunt_targets[chat_id] = set(target_ids)
 
         # ======== UNIVERSAL WATCHER ========
         @self.bot_client.on(events.NewMessage())
@@ -2201,44 +1586,7 @@ class SovereignBot:
                             await event.reply(f"❌ Error saving: {e}")
                         return
 
-            # 1. Bot Watchlist
-            if chat_id in self.bot_watchlist_cache and sender_id in self.bot_watchlist_cache[chat_id]:
-                if not event.text or not event.text.startswith('/'):
-                    async def delete_after_delay(msg_id, t_chat_id, target_sender_id):
-                        await asyncio.sleep(5)
-                        client = await self._get_ninja_client(1)
-                        deleter = client if client else self.bot_client
-                        if deleter:
-                            try:
-                                await deleter.delete_messages(t_chat_id, [msg_id])
-                                await deleter.send_message(t_chat_id, f"✅ Okay ငါဖျက်ပေးမယ် (Bot ID: {target_sender_id})")
-                            except: pass
-                    asyncio.create_task(delete_after_delay(event.id, chat_id, sender_id))
-                    return
-
-            # 2. Catcher Bot
-            if chat_id == Config.CATCHER_CHAT and sender_id == Config.CATCHER_BOT_ID:
-                if chat_id in self.catcher_processing: return
-                self.catcher_processing.add(chat_id)
-                try:
-                    client = await self._get_ninja_client(1)
-                    if client:
-                        try: await client.pin_message(chat_id, event.id)
-                        except: pass
-                        async def delete_catcher():
-                            ids = []
-                            async for msg in client.iter_messages(chat_id, sender_id=Config.CATCHER_BOT_ID, limit=500):
-                                if msg.id != event.id:
-                                    ids.append(msg.id)
-                                if len(ids) >= 100:
-                                    await client.delete_messages(chat_id, ids); ids = []; await asyncio.sleep(0.5)
-                            if ids: await client.delete_messages(chat_id, ids)
-                        asyncio.create_task(delete_catcher())
-                finally:
-                    self.catcher_processing.discard(chat_id)
-                return
-
-            # 3. Dark Passenger (Ninja Pools)
+            # Dark Passenger (only pool 1 now)
             if chat_id in self.ninja_dark_passenger_targets and sender_id == self.ninja_dark_passenger_targets[chat_id]:
                 if event.text and not event.text.startswith(('/', '.', 'မှတ်')):
                     client = await self._get_ninja_client(1)
@@ -2253,36 +1601,8 @@ class SovereignBot:
                             await self._handle_message_sent(chat_id, sent.id)
                         except: pass
                 return
-            if chat_id in self.ninja_dark_passenger_targets2 and sender_id == self.ninja_dark_passenger_targets2[chat_id]:
-                if event.text and not event.text.startswith(('/', '.', 'မှတ်')):
-                    client = await self._get_ninja_client(2)
-                    if client:
-                        try:
-                            await client.delete_messages(chat_id, [event.id])
-                            target = await event.get_sender()
-                            mention = self.format_mention(sender_id, target.first_name or "Target")
-                            taunt_list = await self.get_shadow_taunts()
-                            taunt = random.choice(taunt_list).format(mention=mention)
-                            sent = await event.reply(taunt, parse_mode='html')
-                            await self._handle_message_sent(chat_id, sent.id)
-                        except: pass
-                return
-            if chat_id in self.ninja_dark_passenger_targets3 and sender_id == self.ninja_dark_passenger_targets3[chat_id]:
-                if event.text and not event.text.startswith(('/', '.', 'မှတ်')):
-                    client = await self._get_ninja_client(3)
-                    if client:
-                        try:
-                            await client.delete_messages(chat_id, [event.id])
-                            target = await event.get_sender()
-                            mention = self.format_mention(sender_id, target.first_name or "Target")
-                            taunt_list = await self.get_shadow_taunts()
-                            taunt = random.choice(taunt_list).format(mention=mention)
-                            sent = await event.reply(taunt, parse_mode='html')
-                            await self._handle_message_sent(chat_id, sent.id)
-                        except: pass
-                return
 
-            # 4. Delete and Taunt
+            # Delete and Taunt
             if chat_id in self.delete_and_taunt_targets and sender_id in self.delete_and_taunt_targets[chat_id]:
                 if event.text:
                     client = await self._get_ninja_client(1)
@@ -2297,7 +1617,7 @@ class SovereignBot:
                         except: pass
                 return
 
-            # 5. Save System
+            # Save System
             if chat_id == Config.LEARNING_GROUP and self.save_status:
                 if not await self.is_allowed(sender_id): return
                 text = None
@@ -2321,7 +1641,7 @@ class SovereignBot:
                         except DuplicateKeyError: pass
                         except Exception as e: logger.error(f"Save error: {e}")
 
-            # 6. Tracking
+            # Tracking (only pool 1)
             if chat_id in self.ninja_tracking_targets and sender_id == self.ninja_tracking_targets[chat_id]:
                 target = await event.get_sender()
                 mention = self.format_mention(sender_id, target.first_name or "Target")
@@ -2332,52 +1652,8 @@ class SovereignBot:
                         sent = await client.send_message(chat_id, f"{mention} {phrase}", parse_mode='html')
                         await self._handle_message_sent(chat_id, sent.id)
                     except: pass
-            if chat_id in self.ninja_tracking_targets2 and sender_id == self.ninja_tracking_targets2[chat_id]:
-                target = await event.get_sender()
-                mention = self.format_mention(sender_id, target.first_name or "Target")
-                client = await self._get_ninja_client(2)
-                if client:
-                    phrase = await self.get_next_phrase(chat_id)
-                    try:
-                        sent = await client.send_message(chat_id, f"{mention} {phrase}", parse_mode='html')
-                        await self._handle_message_sent(chat_id, sent.id)
-                    except: pass
-            if chat_id in self.ninja_tracking_targets3 and sender_id == self.ninja_tracking_targets3[chat_id]:
-                target = await event.get_sender()
-                mention = self.format_mention(sender_id, target.first_name or "Target")
-                client = await self._get_ninja_client(3)
-                if client:
-                    phrase = await self.get_next_phrase(chat_id)
-                    try:
-                        sent = await client.send_message(chat_id, f"{mention} {phrase}", parse_mode='html')
-                        await self._handle_message_sent(chat_id, sent.id)
-                    except: pass
 
-            # 7. Copy Mode
-            if self.is_copy_active and sender_id == Config.OWNER_ID:
-                current_chat_id = str(chat_id).replace('-100', '')
-                matrix_id = str(self.matrix_group_id).replace('-100', '') if self.matrix_group_id else None
-                
-                if matrix_id and current_chat_id == matrix_id:
-                    all_clients = self.ninja_clients + self.ninja_clients2 + self.ninja_clients3
-                    
-                    if event.text:
-                        for client in all_clients:
-                            try:
-                                await client.send_message(chat_id, event.text)
-                                await asyncio.sleep(0.2)
-                            except Exception as e:
-                                logger.error(f"Copy error: {e}")
-                    
-                    elif event.media:
-                        for client in all_clients:
-                            try:
-                                await client.send_file(chat_id, event.media, caption=event.text)
-                                await asyncio.sleep(0.3)
-                            except Exception as e:
-                                logger.error(f"Copy media error: {e}")
-
-            # 8. Custom Filters
+            # Custom Filters
             if event.text:
                 text_lower = event.text.lower().strip()
                 async for f in self.db.custom_filters.find():
@@ -2391,7 +1667,7 @@ class SovereignBot:
                             break
                         except: pass
 
-            # 9. Protect Sovereign
+            # Protect Sovereign
             if event.text and event.text.startswith(("ချိန်ထား", "ပစ်သတ်")):
                 reply = await event.get_reply_message()
                 if reply and reply.sender_id == Config.OWNER_ID and event.sender_id != Config.OWNER_ID:
@@ -2438,7 +1714,6 @@ class SovereignBot:
         await self.load_ninja_pools()
         await self.load_special_pool()
         await self.load_taunt_targets()
-        await self.load_bot_watchlist()
 
         threading.Thread(target=run_flask, daemon=True).start()
         await self.bot_client.run_until_disconnected()
