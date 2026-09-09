@@ -45,10 +45,10 @@ class Config:
     
     LEARNING_GROUP = int(os.getenv("LEARNING_GROUP", "-1003806830045"))
     SPAM_GROUPS = [
-        -1003806830045,
-        -1003819613443,
-        -1004421587002,
-        -1004390542396
+        -1004421587002, #tar
+        -1003819613443, #cat
+        -1004390542396, #morgan
+        -1004358565293 #jojo
     ]
     
     TIMEZONE = pytz.timezone(os.getenv("TIMEZONE", "Asia/Yangon"))
@@ -58,7 +58,7 @@ class Config:
     BULLY_DELAY = 0.8
     SHOOT_DELAY = 0.4
     SPAM_DELAY = 0.5
-    TALK_DELAY = 0.3
+    TALK_DELAY = 0.6
     MAX_RETRIES = 3
 
 SPAM_TEXT = """ @Imjustkidding_bot , @GodMorgan_robot ,  @fuckyourwifey_bot rjsjsjsjssjsjjssjsjdjsjsjsjzjsjsjssnsnsnsndndndjsdjdndjdjdjdjdjsjdjdjdjdjdjsjsnsj """
