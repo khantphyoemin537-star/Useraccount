@@ -2,12 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-Sovereign System – CLEAN & FAST (Final)
-- Only Ninja Pool 1 attack commands: /bully, /shoot, /track, /mark
-- Only one join command: /go (uses Ninja Pool 1)
-- Removed moderation, pool 2/3 attack commands, and extra listing commands.
-- Improved /talk: parallel sending using all ninja clients.
-- Fixed /listninja: shows online count.
+Sovereign System – ULTIMATE OPTIMIZED TALK
+- /talk starts parallel workers for ALL clients to ALL 4 groups (Config.SPAM_GROUPS).
+- Dedicated workers per (client, group) pair – NO global blocking on FloodWait.
+- Only Owner can stop /talk.
+- /listninja shows full name.
 """
 
 import asyncio
@@ -42,7 +41,7 @@ class Config:
     BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN", "8111794244:AAGurFdkxV_KrahEYJemMo-hoQkN1mJJKlU")
     
     LEARNING_GROUP = int(os.getenv("LEARNING_GROUP", "-1003806830045"))
-    # Spam groups (4 groups)
+    # Spam groups (4 groups) – also used by /talk
     SPAM_GROUPS = [
         -1003806830045,
         -1003819613443,
@@ -54,14 +53,14 @@ class Config:
     FLASK_PORT = int(os.getenv("PORT", "10000"))
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
-    BULLY_DELAY = 1
-    SHOOT_DELAY = 1
-    SPAM_DELAY = 3
-    TALK_DELAY = 2          # per‑client cooldown in parallel mode
+    BULLY_DELAY = 0.8
+    SHOOT_DELAY = 0.4
+    SPAM_DELAY = 0.5
+    TALK_DELAY = 0.15          # per‑client per‑group cooldown
     MAX_RETRIES = 3
 
-# Hardcoded Spam Text (used by /spam commands)
-SPAM_TEXT = """ @Imjustkidding_bot , @GodMorgan_robot ,  @fuckyourwifey_bot Wqjsdhtf@@*2&wwifjgjffdwjeqjdfesjewfndjsczajqeuqosnxbshwuuremdtpaanzxnss """
+# Hardcoded Spam Text
+SPAM_TEXT = """ @Imjustkidding_bot , @GodMorgan_robot ,  @fuckyourwifey_bot rjsjsjsjssjsjjssjsjdjsjsjsjzjsjsjssnsnsnsndndndjsdjdndjdjdjdjdjsjdjdjdjdjdjsjsnsj """
 
 # ------------------------------------------------------------------
 #  LOGGING
@@ -169,13 +168,13 @@ class SovereignBot:
         self.ninja_dark_passenger_targets: Dict[int, int] = {}
         self.ninja_spam_tasks: Dict[Tuple[int, ...], bool] = {}
 
-        # ---------- NINJA POOL 2 (only for spam and talk) ----------
+        # ---------- NINJA POOL 2 ----------
         self.ninja_clients2: List[TelegramClient] = []
         self.ninja_names2: List[str] = []
         self.ninja_ids2: Set[int] = set()
         self.ninja_spam_tasks2: Dict[Tuple[int, ...], bool] = {}
 
-        # ---------- NINJA POOL 3 (only for spam and talk) ----------
+        # ---------- NINJA POOL 3 ----------
         self.ninja_clients3: List[TelegramClient] = []
         self.ninja_names3: List[str] = []
         self.ninja_ids3: Set[int] = set()
@@ -207,11 +206,10 @@ class SovereignBot:
         self.admin_warned_char = set()
         self.admin_cache = {}
 
-        # Random Talk
-        self.talk_tasks: Dict[int, bool] = {}
-        self.talk_phrases_cache: Dict[int, List[str]] = {}
-        self.talk_indices: Dict[int, int] = {}
-        self.talk_source_group: Dict[int, int] = {}
+        # ---------- NEW TALK SYSTEM ----------
+        self.talk_running = False
+        self.talk_workers: List[asyncio.Task] = []
+        self.talk_phrase_pool: List[str] = []
 
         # AUTO CLEANUP
         self.auto_cleanup = False
@@ -333,7 +331,6 @@ class SovereignBot:
         chat_id = event.chat_id
         text = event.raw_text or ""
 
-        # STOP command in Saved Messages
         if chat_id == event.sender_id and text == "ရပ်":
             if self.special_attack_active:
                 self.special_attack_active = False
@@ -348,24 +345,18 @@ class SovereignBot:
                 logger.info("Special attack stopped via Saved Messages.")
             return
 
-        # TRIGGER: reply to a target with "သေမယ်နော်"
         if text == "သေမယ်နော်" and event.is_reply:
-            if not self.special_clients:
+            if not self.special_clients or self.special_attack_active:
                 return
-            if self.special_attack_active:
-                return
-
             reply_msg = await event.get_reply_message()
             if not reply_msg:
                 return
             target = await reply_msg.get_sender()
             if not target or target.id == Config.OWNER_ID:
                 return
-
             spam_texts = await self.db.special_spam_texts.find().to_list(length=None)
             if not spam_texts:
                 return
-
             self.special_attack_active = True
             self.special_target_chat = chat_id
             self.special_target_mention = self.format_mention(target.id, target.first_name or "Target")
@@ -374,10 +365,7 @@ class SovereignBot:
             client = random.choice(self.special_clients)
             if client:
                 try:
-                    await client.send_message(
-                        client._self_id,
-                        f"🔥 Special attack started on {self.special_target_mention} in chat {chat_id}"
-                    )
+                    await client.send_message(client._self_id, f"🔥 Special attack started on {self.special_target_mention} in chat {chat_id}")
                 except Exception:
                     pass
 
@@ -389,11 +377,7 @@ class SovereignBot:
                         continue
                     text_to_send = random.choice(self.special_spam_texts_list)
                     try:
-                        await client.send_message(
-                            self.special_target_chat,
-                            f"{self.special_target_mention} {text_to_send}",
-                            parse_mode='html'
-                        )
+                        await client.send_message(self.special_target_chat, f"{self.special_target_mention} {text_to_send}", parse_mode='html')
                         await asyncio.sleep(Config.SPAM_DELAY)
                     except FloodWaitError as e:
                         await asyncio.sleep(e.seconds + 1)
@@ -401,7 +385,6 @@ class SovereignBot:
                         logger.error(f"Special attack error: {e}")
                         await asyncio.sleep(2)
                 logger.info("Special attack loop finished.")
-
             self.special_attack_task = asyncio.create_task(attack_loop())
             return
 
@@ -454,7 +437,7 @@ class SovereignBot:
         return f"<blockquote><b>{text}</b></blockquote>"
 
     # --------------------------------------------------------------
-    #  PHRASE & TALK
+    #  PHRASE
     # --------------------------------------------------------------
     async def fetch_learned_phrases(self) -> List[str]:
         docs = await self.db.learned.find().to_list(length=10000)
@@ -486,79 +469,83 @@ class SovereignBot:
         self.phrase_lists.pop(chat_id, None)
         self.phrase_indices.pop(chat_id, None)
 
-    # ---------- Talk phrase management ----------
-    async def fetch_talk_phrases(self, source_group_id: int) -> List[str]:
-        docs = await self.db.talk_phrases.find({"group_id": source_group_id}).to_list(length=10000)
+    # --------------------------------------------------------------
+    #  OPTIMAL TALK SYSTEM (Parallel Workers per Client & Group)
+    # --------------------------------------------------------------
+    async def _load_talk_phrases(self):
+        """Load phrases from DB (group_id=0) into pool."""
+        docs = await self.db.talk_phrases.find({"group_id": 0}).to_list(length=10000)
         if docs:
-            return [doc.get("text") for doc in docs if doc.get("text")]
-        return []
+            self.talk_phrase_pool = [doc.get("text") for doc in docs if doc.get("text")]
+        if not self.talk_phrase_pool:
+            # Fallback to learned phrases or default
+            self.talk_phrase_pool = await self.fetch_learned_phrases()
+        random.shuffle(self.talk_phrase_pool)
 
-    async def get_next_talk_phrase(self, source_group_id: int) -> str:
-        if source_group_id not in self.talk_phrases_cache:
-            phrases = await self.fetch_talk_phrases(source_group_id)
-            if not phrases:
-                return "စကားလုံးမရှိသေးပါ"
-            random.shuffle(phrases)
-            self.talk_phrases_cache[source_group_id] = phrases
-            self.talk_indices[source_group_id] = 0
-        phrases = self.talk_phrases_cache[source_group_id]
-        idx = self.talk_indices.get(source_group_id, 0)
-        phrase = phrases[idx]
-        idx += 1
-        if idx >= len(phrases):
-            random.shuffle(phrases)
-            idx = 0
-        self.talk_indices[source_group_id] = idx
-        return phrase
+    async def _talk_worker(self, client: TelegramClient, group_id: int):
+        """Dedicated worker for a single (client, group) pair."""
+        while self.talk_running:
+            if not self.talk_phrase_pool:
+                await self._load_talk_phrases()
+                if not self.talk_phrase_pool:
+                    await asyncio.sleep(1)
+                    continue
+            phrase = random.choice(self.talk_phrase_pool)
+            try:
+                sent = await client.send_message(group_id, phrase)
+                await self._handle_message_sent(group_id, sent.id)
+                await asyncio.sleep(Config.TALK_DELAY)
+            except FloodWaitError as e:
+                # Sleep exactly for the flood duration, then continue
+                await asyncio.sleep(e.seconds + 1)
+            except Exception as e:
+                logger.error(f"Talk worker error for {group_id}: {e}")
+                await asyncio.sleep(1)
 
-    # --------------------------------------------------------------
-    #  IMPROVED TALK LOOP (Parallel using all Ninja clients)
-    # --------------------------------------------------------------
-    async def start_talk_loop(self, chat_id: int, source_group_id: int):
-        if chat_id in self.talk_tasks and self.talk_tasks[chat_id]:
+    async def start_talk(self):
+        """Start talk workers for all clients to all Config.SPAM_GROUPS."""
+        if self.talk_running:
             return
-        self.talk_tasks[chat_id] = True
-        self.talk_source_group[chat_id] = source_group_id
-        if source_group_id not in self.talk_phrases_cache:
-            await self.fetch_talk_phrases(source_group_id)
-
-        # Gather all ninja clients from all pools
+        # Gather all ninja clients
         all_clients = self.ninja_clients + self.ninja_clients2 + self.ninja_clients3
         if not all_clients:
             logger.warning("No ninja clients available for talk.")
             return
 
-        random.shuffle(all_clients)
-        next_send = {client: datetime.now() for client in all_clients}
+        # Load phrases once
+        await self._load_talk_phrases()
+        if not self.talk_phrase_pool:
+            logger.warning("No talk phrases available.")
+            return
 
-        async def send_one(client, phrase):
-            try:
-                sent = await client.send_message(chat_id, phrase)
-                await self._handle_message_sent(chat_id, sent.id)
-                next_send[client] = datetime.now() + timedelta(seconds=Config.TALK_DELAY)
-            except FloodWaitError as e:
-                next_send[client] = datetime.now() + timedelta(seconds=e.seconds + 1)
-                logger.warning(f"Talk flood on {client}: {e.seconds}s")
-            except Exception as e:
-                logger.error(f"Talk send error: {e}")
-                next_send[client] = datetime.now() + timedelta(seconds=1)
+        self.talk_running = True
+        self.talk_workers = []
+        groups = Config.SPAM_GROUPS
+        if not groups:
+            logger.warning("No SPAM_GROUPS defined for talk.")
+            self.talk_running = False
+            return
 
-        async def talk_loop():
-            logger.info(f"🚀 Talk started in chat {chat_id} using {len(all_clients)} clients")
-            while self.talk_tasks.get(chat_id, False):
-                tasks = []
-                for client in all_clients:
-                    now = datetime.now()
-                    if now < next_send[client]:
-                        continue
-                    phrase = await self.get_next_talk_phrase(source_group_id)
-                    tasks.append(send_one(client, phrase))
-                if tasks:
-                    await asyncio.gather(*tasks)
-                await asyncio.sleep(0.05)
-            logger.info(f"🛑 Talk stopped in chat {chat_id}")
+        logger.info(f"🚀 Starting TALK workers: {len(all_clients)} clients × {len(groups)} groups")
+        for client in all_clients:
+            for group in groups:
+                task = asyncio.create_task(self._talk_worker(client, group))
+                self.talk_workers.append(task)
 
-        asyncio.create_task(talk_loop())
+    async def stop_talk(self):
+        """Stop all talk workers."""
+        if not self.talk_running:
+            return
+        self.talk_running = False
+        # Cancel all worker tasks
+        for task in self.talk_workers:
+            if not task.done():
+                task.cancel()
+        # Wait for them to finish
+        if self.talk_workers:
+            await asyncio.gather(*self.talk_workers, return_exceptions=True)
+        self.talk_workers.clear()
+        logger.info("🛑 TALK stopped.")
 
     # --------------------------------------------------------------
     #  AUTO CLEANUP
@@ -1100,8 +1087,10 @@ class SovereignBot:
                 if chat_id in key:
                     self.ninja_spam_tasks3[key] = False
                     stopped = True
-            # Talk
-            if chat_id in self.talk_tasks: self.talk_tasks[chat_id] = False; stopped = True
+            # Talk (stop all workers)
+            if self.talk_running:
+                await self.stop_talk()
+                stopped = True
             self.reset_phrase_cycle(chat_id)
             if stopped:
                 await event.reply("🛑 All active attacks (bully/shoot/track/spam/talk) stopped in this chat for all ninja pools.")
@@ -1121,11 +1110,12 @@ class SovereignBot:
             if not text:
                 await event.reply("❌ Usage: `/addtalkphrase <text>` or reply to a message.")
                 return
-            group_id = 0  # default
+            group_id = 0
             try:
                 await self.db.talk_phrases.update_one({"group_id": group_id, "text": text}, {"$set": {"group_id": group_id, "text": text}}, upsert=True)
                 await event.reply(f"✅ Talk phrase added (group {group_id}).")
-                self.talk_phrases_cache.pop(group_id, None)
+                # Reload phrases for talk
+                await self._load_talk_phrases()
             except DuplicateKeyError:
                 await event.reply("⚠️ Phrase already exists.")
             except Exception as e:
@@ -1143,32 +1133,32 @@ class SovereignBot:
             lines = [f"{i+1}. {d['text']}" for i, d in enumerate(docs)]
             await event.reply("📝 **Talk Phrases (group 0)**\n\n" + "\n".join(lines[:30]), parse_mode='markdown')
 
-        # ======== /talk (improved parallel) ========
-        @self.bot_client.on(events.NewMessage(pattern=r"^/talk(?:\s+(-?\d+))?$"))
+        # ======== /talk (NEW OPTIMAL) ========
+        @self.bot_client.on(events.NewMessage(pattern=r"^/talk$"))
         async def talk_command(event):
-            if not await self.is_allowed(event.sender_id): return
-            chat_id = event.chat_id
-            source_group_id = event.pattern_match.group(1)
-            if source_group_id:
-                source_group_id = int(source_group_id)
-            else:
-                source_group_id = 0
-            count = await self.db.talk_phrases.count_documents({"group_id": source_group_id})
-            if count == 0:
-                await event.reply(f"❌ No phrases for group {source_group_id}.")
+            if not await self.is_allowed(event.sender_id):
                 return
-            await self.start_talk_loop(chat_id, source_group_id)
-            await event.reply(f"🗣️ Talk started using group {source_group_id} (parallel mode with all ninja clients).")
+            if self.talk_running:
+                await event.reply("⚠️ Talk is already running.")
+                return
+            groups = Config.SPAM_GROUPS
+            if not groups:
+                await event.reply("❌ No SPAM_GROUPS defined for talk.")
+                return
+            await self.start_talk()
+            await event.reply(f"🗣️ Talk started on **{len(groups)} groups** (all ninja clients).\nUse `/stoptalk` to stop.")
 
+        # ======== /stoptalk (Only Owner) ========
         @self.bot_client.on(events.NewMessage(pattern=r"^/stoptalk$"))
-        async def stoptalk(event):
-            if not await self.is_allowed(event.sender_id): return
-            chat_id = event.chat_id
-            if chat_id in self.talk_tasks:
-                self.talk_tasks[chat_id] = False
-                await event.reply("🛑 Talk stopped.")
-            else:
-                await event.reply("ℹ️ No active talk.")
+        async def stoptalk_command(event):
+            if event.sender_id != Config.OWNER_ID:
+                await event.reply("⛔ Only owner can stop talk.")
+                return
+            if not self.talk_running:
+                await event.reply("ℹ️ Talk is not running.")
+                return
+            await self.stop_talk()
+            await event.reply("🛑 Talk stopped.")
 
         # ======== NINJA POOL MANAGEMENT – POOL 1 ========
         @self.bot_client.on(events.NewMessage(pattern=r"^/addninja(?:\s+(.*?))?(?:\s+(.*))?$"))
@@ -1214,7 +1204,9 @@ class SovereignBot:
                 try:
                     me = await client.get_me()
                     online += 1
-                    lines.append(f"  {i+1}. **{name}** – @{me.username} (ID: {me.id}) ✅")
+                    full_name = f"{me.first_name or ''} {me.last_name or ''}".strip() or "No Name"
+                    username = f"(@{me.username})" if me.username else ""
+                    lines.append(f"  {i+1}. **{full_name}** {username} (ID: `{me.id}`) ✅")
                 except:
                     lines.append(f"  {i+1}. **{name}** – (offline) ❌")
             lines.append(f"\n📊 Online: {online}/{len(self.ninja_clients)}")
@@ -1276,8 +1268,6 @@ class SovereignBot:
                 await event.reply(f"❌ Failed: {str(e)}")
                 await self.db.ninja_col2.delete_one({"session": session_str})
 
-        # Removed /listninja2 and /listninja3 as requested
-
         @self.bot_client.on(events.NewMessage(pattern=r"^/removeninja2\s+(.+)$"))
         async def remove_ninja2(event):
             if event.sender_id != Config.OWNER_ID: return
@@ -1333,8 +1323,6 @@ class SovereignBot:
             except Exception as e:
                 await event.reply(f"❌ Failed: {str(e)}")
                 await self.db.ninja_col3.delete_one({"session": session_str})
-
-        # Removed /listninja3
 
         @self.bot_client.on(events.NewMessage(pattern=r"^/removeninja3\s+(.+)$"))
         async def remove_ninja3(event):
@@ -1512,7 +1500,6 @@ class SovereignBot:
             taunt_count = sum(len(s) for s in self.delete_and_taunt_targets.values())
             learned_count = await self.db.learned.count_documents({})
             talk_phrases_count = await self.db.talk_phrases.count_documents({})
-            active_talk = len([c for c, r in self.talk_tasks.items() if r])
             msg = (
                 f"📊 **Status**\n"
                 f"🤖 Ninja Pool1: {len(self.ninja_clients)}\n"
@@ -1522,7 +1509,7 @@ class SovereignBot:
                 f"🗂️ Learned: {learned_count}\n"
                 f"💾 Save: {'ON' if self.save_status else 'OFF'}\n"
                 f"🔄 Cleanup: {'ON' if self.auto_cleanup else 'OFF'}\n"
-                f"🗣️ Talk: {active_talk}\n"
+                f"🗣️ Talk Running: {'✅' if self.talk_running else '❌'}\n"
                 f"👹 Taunts: {taunt_count}"
             )
             await event.reply(msg, parse_mode='markdown')
@@ -1586,7 +1573,7 @@ class SovereignBot:
                             await event.reply(f"❌ Error saving: {e}")
                         return
 
-            # Dark Passenger (only pool 1 now)
+            # Dark Passenger (only pool 1)
             if chat_id in self.ninja_dark_passenger_targets and sender_id == self.ninja_dark_passenger_targets[chat_id]:
                 if event.text and not event.text.startswith(('/', '.', 'မှတ်')):
                     client = await self._get_ninja_client(1)
@@ -1719,6 +1706,8 @@ class SovereignBot:
         await self.bot_client.run_until_disconnected()
 
     async def stop(self) -> None:
+        if self.talk_running:
+            await self.stop_talk()
         if self.bot_client.is_connected():
             await self.bot_client.disconnect()
         for client in self.ninja_clients + self.ninja_clients2 + self.ninja_clients3:
