@@ -2,11 +2,12 @@
 # -*- coding: utf-8 -*-
 
 """
-Sovereign System – ULTIMATE OPTIMIZED TALK
-- /talk starts parallel workers for ALL clients to ALL 4 groups (Config.SPAM_GROUPS).
-- Dedicated workers per (client, group) pair – NO global blocking on FloodWait.
-- Only Owner can stop /talk.
-- /listninja shows full name.
+Sovereign System – FINAL ERROR-FREE VERSION
+- Parallel talk on all 4 groups using all clients.
+- Only Owner can stop talk.
+- /listninja shows full name and online count.
+- No moderation commands, no pool 2/3 attack commands.
+- All methods defined at class level to avoid AttributeError.
 """
 
 import asyncio
@@ -29,6 +30,8 @@ from telethon import TelegramClient, events, errors
 from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
 from telethon.tl.functions.messages import ImportChatInviteRequest
+from telethon.tl.functions.channels import GetParticipantsRequest
+from telethon.tl.types import ChannelParticipantsAdmins
 
 # ------------------------------------------------------------------
 #  CONFIGURATION
@@ -41,7 +44,6 @@ class Config:
     BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN", "8111794244:AAGurFdkxV_KrahEYJemMo-hoQkN1mJJKlU")
     
     LEARNING_GROUP = int(os.getenv("LEARNING_GROUP", "-1003806830045"))
-    # Spam groups (4 groups) – also used by /talk
     SPAM_GROUPS = [
         -1003806830045,
         -1003819613443,
@@ -56,10 +58,9 @@ class Config:
     BULLY_DELAY = 0.8
     SHOOT_DELAY = 0.4
     SPAM_DELAY = 0.5
-    TALK_DELAY = 0.15          # per‑client per‑group cooldown
+    TALK_DELAY = 0.3
     MAX_RETRIES = 3
 
-# Hardcoded Spam Text
 SPAM_TEXT = """ @Imjustkidding_bot , @GodMorgan_robot ,  @fuckyourwifey_bot rjsjsjsjssjsjjssjsjdjsjsjsjzjsjsjssnsnsnsndndndjsdjdndjdjdjdjdjsjdjdjdjdjdjsjsnsj """
 
 # ------------------------------------------------------------------
@@ -70,7 +71,7 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("SovereignClean")
+logger = logging.getLogger("SovereignFinal")
 
 # ------------------------------------------------------------------
 #  FLASK KEEP‑ALIVE
@@ -79,7 +80,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route("/")
 def health_check() -> str:
-    return "Sovereign Clean System is operational."
+    return "Sovereign Final System is operational."
 
 def run_flask() -> None:
     flask_app.run(host="0.0.0.0", port=Config.FLASK_PORT, threaded=True)
@@ -206,7 +207,7 @@ class SovereignBot:
         self.admin_warned_char = set()
         self.admin_cache = {}
 
-        # ---------- NEW TALK SYSTEM ----------
+        # ---------- TALK SYSTEM ----------
         self.talk_running = False
         self.talk_workers: List[asyncio.Task] = []
         self.talk_phrase_pool: List[str] = []
@@ -216,7 +217,38 @@ class SovereignBot:
         self.msg_queues: Dict[int, List[int]] = {}
         self.queue_locks: Dict[int, asyncio.Lock] = {}
 
+        # Register handlers after everything is set up
         self._register_handlers()
+
+    # --------------------------------------------------------------
+    #  TAUNT TARGETS – CLASS METHODS
+    # --------------------------------------------------------------
+    async def load_taunt_targets(self) -> None:
+        async for doc in self.db.taunt_targets.find():
+            chat_id = doc["chat_id"]
+            target_ids = doc.get("target_ids", [])
+            if target_ids:
+                self.delete_and_taunt_targets[chat_id] = set(target_ids)
+
+    async def _add_taunt_target(self, chat_id: int, target_id: int) -> None:
+        if chat_id not in self.delete_and_taunt_targets:
+            self.delete_and_taunt_targets[chat_id] = set()
+        self.delete_and_taunt_targets[chat_id].add(target_id)
+        await self.db.taunt_targets.update_one({"chat_id": chat_id}, {"$addToSet": {"target_ids": target_id}}, upsert=True)
+
+    async def _remove_taunt_target(self, chat_id: int, target_id: int) -> None:
+        if chat_id in self.delete_and_taunt_targets:
+            self.delete_and_taunt_targets[chat_id].discard(target_id)
+            if not self.delete_and_taunt_targets[chat_id]:
+                del self.delete_and_taunt_targets[chat_id]
+                await self.db.taunt_targets.delete_one({"chat_id": chat_id})
+            else:
+                await self.db.taunt_targets.update_one({"chat_id": chat_id}, {"$pull": {"target_ids": target_id}})
+
+    async def _clear_taunt_targets(self, chat_id: int) -> None:
+        if chat_id in self.delete_and_taunt_targets:
+            del self.delete_and_taunt_targets[chat_id]
+            await self.db.taunt_targets.delete_one({"chat_id": chat_id})
 
     # --------------------------------------------------------------
     #  NINJA POOL LOADING
@@ -290,6 +322,9 @@ class SovereignBot:
                 logger.error(f"❌ Special Pool – failed: {e}")
         logger.info(f"🚀 Special Pool ready: {len(self.special_clients)} clients.")
 
+    # --------------------------------------------------------------
+    #  CLIENT SELECTION
+    # --------------------------------------------------------------
     async def _get_ninja_client(self, pool: int = 1) -> Optional[TelegramClient]:
         clients = [self.ninja_clients, self.ninja_clients2, self.ninja_clients3]
         pool_clients = clients[pool-1]
@@ -404,8 +439,6 @@ class SovereignBot:
 
     async def _update_admin_cache(self, chat_id: int):
         try:
-            from telethon.tl.functions.channels import GetParticipantsRequest
-            from telethon.tl.types import ChannelParticipantsAdmins
             admins = await self.bot_client(GetParticipantsRequest(channel=chat_id, filter=ChannelParticipantsAdmins(), offset=0, limit=200, hash=0))
             admin_ids = {p.user_id for p in admins.participants}
             self.admin_cache[chat_id] = {"ids": admin_ids, "expiry": time.time() + 300}
@@ -473,17 +506,14 @@ class SovereignBot:
     #  OPTIMAL TALK SYSTEM (Parallel Workers per Client & Group)
     # --------------------------------------------------------------
     async def _load_talk_phrases(self):
-        """Load phrases from DB (group_id=0) into pool."""
         docs = await self.db.talk_phrases.find({"group_id": 0}).to_list(length=10000)
         if docs:
             self.talk_phrase_pool = [doc.get("text") for doc in docs if doc.get("text")]
         if not self.talk_phrase_pool:
-            # Fallback to learned phrases or default
             self.talk_phrase_pool = await self.fetch_learned_phrases()
         random.shuffle(self.talk_phrase_pool)
 
     async def _talk_worker(self, client: TelegramClient, group_id: int):
-        """Dedicated worker for a single (client, group) pair."""
         while self.talk_running:
             if not self.talk_phrase_pool:
                 await self._load_talk_phrases()
@@ -496,23 +526,19 @@ class SovereignBot:
                 await self._handle_message_sent(group_id, sent.id)
                 await asyncio.sleep(Config.TALK_DELAY)
             except FloodWaitError as e:
-                # Sleep exactly for the flood duration, then continue
                 await asyncio.sleep(e.seconds + 1)
             except Exception as e:
                 logger.error(f"Talk worker error for {group_id}: {e}")
                 await asyncio.sleep(1)
 
     async def start_talk(self):
-        """Start talk workers for all clients to all Config.SPAM_GROUPS."""
         if self.talk_running:
             return
-        # Gather all ninja clients
         all_clients = self.ninja_clients + self.ninja_clients2 + self.ninja_clients3
         if not all_clients:
             logger.warning("No ninja clients available for talk.")
             return
 
-        # Load phrases once
         await self._load_talk_phrases()
         if not self.talk_phrase_pool:
             logger.warning("No talk phrases available.")
@@ -533,15 +559,12 @@ class SovereignBot:
                 self.talk_workers.append(task)
 
     async def stop_talk(self):
-        """Stop all talk workers."""
         if not self.talk_running:
             return
         self.talk_running = False
-        # Cancel all worker tasks
         for task in self.talk_workers:
             if not task.done():
                 task.cancel()
-        # Wait for them to finish
         if self.talk_workers:
             await asyncio.gather(*self.talk_workers, return_exceptions=True)
         self.talk_workers.clear()
@@ -1062,13 +1085,14 @@ class SovereignBot:
                 await self._clear_taunt_targets(chat_id)
                 await event.reply("🧹 ဒီ Chat ထဲက အားလုံးကို ရှင်းလိုက်ပါပြီ။")
 
-        # ======== STOP ========
+        # ======== STOP COMMAND (Owner can stop talk) ========
         @self.bot_client.on(events.NewMessage(pattern=r"^(ရပ်|/stop)$"))
         async def stop_attack(event):
             if not await self.is_allowed(event.sender_id): return
             chat_id = event.chat_id
             stopped = False
-            # Pool 1
+            
+            # Stop Pool 1 attacks
             if chat_id in self.ninja_bully_tasks: self.ninja_bully_tasks[chat_id] = False; stopped = True
             if chat_id in self.ninja_shoot_tasks: self.ninja_shoot_tasks[chat_id] = False; stopped = True
             if chat_id in self.ninja_tracking_targets: del self.ninja_tracking_targets[chat_id]; stopped = True
@@ -1077,25 +1101,34 @@ class SovereignBot:
                 if chat_id in key:
                     self.ninja_spam_tasks[key] = False
                     stopped = True
-            # Pool 2
+                    
+            # Stop Pool 2 spam
             for key in list(self.ninja_spam_tasks2.keys()):
                 if chat_id in key:
                     self.ninja_spam_tasks2[key] = False
                     stopped = True
-            # Pool 3
+                    
+            # Stop Pool 3 spam
             for key in list(self.ninja_spam_tasks3.keys()):
                 if chat_id in key:
                     self.ninja_spam_tasks3[key] = False
                     stopped = True
-            # Talk (stop all workers)
+
+            # Stop TALK only if sender is OWNER
             if self.talk_running:
-                await self.stop_talk()
-                stopped = True
+                if event.sender_id == Config.OWNER_ID:
+                    await self.stop_talk()
+                    stopped = True
+                else:
+                    await event.reply("ℹ️ Talk can only be stopped by Owner. Other attacks stopped for this chat.")
+
             self.reset_phrase_cycle(chat_id)
+            
             if stopped:
-                await event.reply("🛑 All active attacks (bully/shoot/track/spam/talk) stopped in this chat for all ninja pools.")
+                await event.reply("🛑 Stopped your active attacks (bully/shoot/track/spam) in this chat.")
             else:
-                await event.reply("ℹ️ No active attacks to stop.")
+                if not self.talk_running:
+                    await event.reply("ℹ️ No active attacks to stop for you.")
 
         # ======== TALK PHRASE MANAGEMENT ========
         @self.bot_client.on(events.NewMessage(pattern=r"^/addtalkphrase(?:\s+(.+))?$"))
@@ -1114,7 +1147,6 @@ class SovereignBot:
             try:
                 await self.db.talk_phrases.update_one({"group_id": group_id, "text": text}, {"$set": {"group_id": group_id, "text": text}}, upsert=True)
                 await event.reply(f"✅ Talk phrase added (group {group_id}).")
-                # Reload phrases for talk
                 await self._load_talk_phrases()
             except DuplicateKeyError:
                 await event.reply("⚠️ Phrase already exists.")
@@ -1133,7 +1165,7 @@ class SovereignBot:
             lines = [f"{i+1}. {d['text']}" for i, d in enumerate(docs)]
             await event.reply("📝 **Talk Phrases (group 0)**\n\n" + "\n".join(lines[:30]), parse_mode='markdown')
 
-        # ======== /talk (NEW OPTIMAL) ========
+        # ======== /talk ========
         @self.bot_client.on(events.NewMessage(pattern=r"^/talk$"))
         async def talk_command(event):
             if not await self.is_allowed(event.sender_id):
@@ -1146,7 +1178,7 @@ class SovereignBot:
                 await event.reply("❌ No SPAM_GROUPS defined for talk.")
                 return
             await self.start_talk()
-            await event.reply(f"🗣️ Talk started on **{len(groups)} groups** (all ninja clients).\nUse `/stoptalk` to stop.")
+            await event.reply(f"🗣️ Talk started on **{len(groups)} groups** (all ninja clients).\nOnly Owner can stop it using `ရပ်` or `/stoptalk`.")
 
         # ======== /stoptalk (Only Owner) ========
         @self.bot_client.on(events.NewMessage(pattern=r"^/stoptalk$"))
@@ -1521,34 +1553,6 @@ class SovereignBot:
             target_id = int(event.pattern_match.group(1))
             result = await self.db.allowed_users.delete_one({"user_id": target_id})
             await event.reply("✅ Removed" if result.deleted_count else "⚠️ Not found")
-
-        # ======== TAUNT HELPERS ========
-        async def _add_taunt_target(self, chat_id: int, target_id: int) -> None:
-            if chat_id not in self.delete_and_taunt_targets:
-                self.delete_and_taunt_targets[chat_id] = set()
-            self.delete_and_taunt_targets[chat_id].add(target_id)
-            await self.db.taunt_targets.update_one({"chat_id": chat_id}, {"$addToSet": {"target_ids": target_id}}, upsert=True)
-
-        async def _remove_taunt_target(self, chat_id: int, target_id: int) -> None:
-            if chat_id in self.delete_and_taunt_targets:
-                self.delete_and_taunt_targets[chat_id].discard(target_id)
-                if not self.delete_and_taunt_targets[chat_id]:
-                    del self.delete_and_taunt_targets[chat_id]
-                    await self.db.taunt_targets.delete_one({"chat_id": chat_id})
-                else:
-                    await self.db.taunt_targets.update_one({"chat_id": chat_id}, {"$pull": {"target_ids": target_id}})
-
-        async def _clear_taunt_targets(self, chat_id: int) -> None:
-            if chat_id in self.delete_and_taunt_targets:
-                del self.delete_and_taunt_targets[chat_id]
-                await self.db.taunt_targets.delete_one({"chat_id": chat_id})
-
-        async def load_taunt_targets(self) -> None:
-            async for doc in self.db.taunt_targets.find():
-                chat_id = doc["chat_id"]
-                target_ids = doc.get("target_ids", [])
-                if target_ids:
-                    self.delete_and_taunt_targets[chat_id] = set(target_ids)
 
         # ======== UNIVERSAL WATCHER ========
         @self.bot_client.on(events.NewMessage())
