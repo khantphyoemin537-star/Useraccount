@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
+####
 """
 Sovereign System – FINAL ERROR-FREE VERSION
 - Parallel talk on all 4 groups using all clients.
