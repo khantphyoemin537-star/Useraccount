@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Sovereign System – ANY-GROUP TAUNT + MULTI-TASK FAST
+Sovereign System – ANY-GROUP TAUNT + PER-GROUP STOP + MULTI-TASK FAST
 - Taunt (ဖာသည်မသား) works in ANY group (not limited to SPAM_GROUPS)
-- Admin cache preloaded for SPAM_GROUPS + all warmup_groups in DB
-- /warmup command: register current group + scan admin cache
-- Parallel admin scan, fire-and-forget taunt
+- /talk per-group (typing in SPAM_GROUP starts only that group; Owner from DM starts all)
+- "ရပ်" / "/stop" in SPAM_GROUP stops ONLY that group; Owner from other chat stops all
 - All commands accept @botusername
-- Allowed users: both "ရပ်" and "/stop"
+- Admin cache preloaded for SPAM_GROUPS + warmup_groups
+- Parallel admin scan, fire-and-forget taunt, staggered talk workers
 """
 
 import asyncio
@@ -167,7 +167,7 @@ class SovereignBot:
         self.msg_queues: Dict[int, List[int]] = {}
         self.queue_locks: Dict[int, asyncio.Lock] = {}
 
-        # Warmup groups cache (loaded from DB)
+        # Warmup groups cache
         self.warmup_groups_cache: Set[int] = set()
 
         self._register_handlers()
@@ -216,7 +216,7 @@ class SovereignBot:
         self.warmup_groups_cache.discard(chat_id)
         await self.db.warmup_groups.delete_one({"chat_id": chat_id})
 
-    # ---------- ADMIN CACHE (parallel scan) ----------
+    # ---------- ADMIN CACHE ----------
     async def _scan_admin_clients(self, chat_id: int) -> List[TelegramClient]:
         async def check(client):
             try:
@@ -233,7 +233,6 @@ class SovereignBot:
         return [c for c in results if c is not None]
 
     async def _get_admin_clients(self, chat_id: int) -> List[TelegramClient]:
-        """Works for ANY chat_id. Cached for ADMIN_CACHE_TTL seconds."""
         now = time.time()
         cached = self.chat_admin_cache.get(chat_id)
         if cached and now < cached[1]:
@@ -253,7 +252,6 @@ class SovereignBot:
             return admins
 
     async def preload_admin_caches(self) -> None:
-        """Preload SPAM_GROUPS + all warmup groups in DB."""
         targets = set(Config.SPAM_GROUPS) | self.warmup_groups_cache
         if not targets:
             return
@@ -563,7 +561,6 @@ class SovereignBot:
 
     # ---------- TAUNT EXECUTION ----------
     async def _taunt_user(self, chat_id: int, target_id: int, msg_id: int, target_name: str = "Target"):
-        """Fast, admin-only taunt. Works in ANY chat_id."""
         admins = await self._get_admin_clients(chat_id)
         if not admins:
             return
@@ -675,7 +672,7 @@ class SovereignBot:
             await self._start_spam_loop(groups)
             await event.reply(f"🗣️ Spam started on {len(groups)} groups.")
 
-        # ===== TAUNT (works in ANY group) =====
+        # ===== TAUNT =====
         @self.bot_client.on(events.NewMessage(pattern=r"^ဖာသည်မသား$"))
         async def taunt(event):
             if not await self.is_allowed(event.sender_id): return
@@ -692,7 +689,6 @@ class SovereignBot:
             target_id = target.id
             target_name = target.first_name or "Target"
 
-            # Works in ANY chat_id
             admins = await self._get_admin_clients(chat_id)
             if not admins:
                 return await event.reply("⚠️ No ninja is admin in this chat. Taunt won't work here.")
@@ -738,27 +734,38 @@ class SovereignBot:
             await self._clear_taunt_targets(cid)
             await event.reply("🧹 Cleared.")
 
-        # ===== STOP =====
+        # ===== STOP (PER-GROUP) =====
         @self.bot_client.on(events.NewMessage(pattern=r"^(ရပ်|/stop(?:@\w+)?)$"))
         async def stop_cmd(event):
-            if not await self.is_allowed(event.sender_id): return
+            if not await self.is_allowed(event.sender_id):
+                return
             chat_id = event.chat_id
-            stopped = False
+            stopped_here = False
 
+            # 1) Stop SPAM tasks for THIS chat only
             for key in list(self.ninja_spam_tasks.keys()):
                 if chat_id in key:
                     self.ninja_spam_tasks[key] = False
-                    stopped = True
+                    stopped_here = True
 
-            if chat_id in Config.SPAM_GROUPS and chat_id in self.talk_active_groups:
-                await self.stop_talk_group(chat_id)
-                stopped = True
-            elif event.sender_id == Config.OWNER_ID and self.talk_active_groups:
-                await self.stop_talk_all()
-                stopped = True
+            # 2) Talk control
+            if chat_id in Config.SPAM_GROUPS:
+                # In one of the 4 groups → stop ONLY this group
+                if chat_id in self.talk_active_groups:
+                    await self.stop_talk_group(chat_id)
+                    stopped_here = True
+                # No fallthrough to stop_talk_all()
+            else:
+                # Not a SPAM_GROUP → only Owner can stop everything
+                if event.sender_id == Config.OWNER_ID and self.talk_active_groups:
+                    await self.stop_talk_all()
+                    stopped_here = True
 
-            if stopped:
-                await event.reply("🛑 Stopped.")
+            # 3) Response
+            remaining = sorted(self.talk_active_groups)
+            if stopped_here:
+                tail = f"\n▶️ Still running in {len(remaining)} group(s)" if remaining else "\n▶️ No groups running."
+                await event.reply(f"🛑 Stopped in this chat.{tail}")
             else:
                 await event.reply("ℹ️ Nothing to stop here.")
 
@@ -917,11 +924,13 @@ class SovereignBot:
         async def status_cmd(event):
             if event.sender_id != Config.OWNER_ID: return
             taunts = sum(len(s) for s in self.delete_and_taunt_targets.values())
+            active_list = ", ".join(str(g) for g in sorted(self.talk_active_groups)) or "none"
             msg = (
                 f"📊 **Status**\n"
                 f"🤖 Ninja Pool: {len(self.ninja_clients)}\n"
                 f"🔄 Cleanup: {'ON' if self.auto_cleanup else 'OFF'}\n"
-                f"🗣️ Talk Groups: {len(self.talk_active_groups)}/{len(Config.SPAM_GROUPS)}\n"
+                f"🗣️ Talk Active: {len(self.talk_active_groups)}/{len(Config.SPAM_GROUPS)}\n"
+                f"   ↳ {active_list}\n"
                 f"🔥 Warmup Groups: {len(self.warmup_groups_cache)}\n"
                 f"🛡️ Admin Caches: {len(self.chat_admin_cache)}\n"
                 f"👹 Taunts: {taunts}"
