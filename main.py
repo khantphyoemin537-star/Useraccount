@@ -55,8 +55,8 @@ class Config:
     FLASK_PORT = int(os.getenv("PORT", "10000"))
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
-    SPAM_DELAY = 2
-    TALK_DELAY = 2
+    SPAM_DELAY = 1
+    TALK_DELAY = 1
     ADMIN_CACHE_TTL = 600
     MAX_RETRIES = 3
 
