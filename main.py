@@ -57,8 +57,8 @@ class Config:
 
     BULLY_DELAY = 0.8
     SHOOT_DELAY = 0.4
-    SPAM_DELAY = 0.5
-    TALK_DELAY = 0.6
+    SPAM_DELAY = 1
+    TALK_DELAY = 1
     MAX_RETRIES = 3
 
 SPAM_TEXT = """ @Imjustkidding_bot , @GodMorgan_robot ,  @fuckyourwifey_bot rjsjsjsjssjsjjssjsjdjsjsjsjzjsjsjssnsnsnsndndndjsdjdndjdjdjdjdjsjdjdjdjdjdjsjsnsj """
