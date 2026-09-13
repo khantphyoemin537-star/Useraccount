@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Sovereign System – ANY-GROUP TAUNT + PER-GROUP STOP + MULTI-TASK FAST
-- Taunt (ဖာသည်မသား) works in ANY group (not limited to SPAM_GROUPS)
-- /talk per-group (typing in SPAM_GROUP starts only that group; Owner from DM starts all)
-- "ရပ်" / "/stop" in SPAM_GROUP stops ONLY that group; Owner from other chat stops all
-- All commands accept @botusername
-- Admin cache preloaded for SPAM_GROUPS + warmup_groups
-- Parallel admin scan, fire-and-forget taunt, staggered talk workers
+Sovereign System – ANY-GROUP TAUNT + PER-GROUP STOP + REPORT SYSTEM
+- Taunt (ဖာသည်မသား) works in ANY group
+- /talk per-group, "ရပ်" per-group stop
+- NEW: /report, /reportbulk, /reportloop, /stopreport
+- Ninja clients used in parallel for reporting
 """
 
 import asyncio
@@ -32,12 +30,14 @@ from telethon.sessions import StringSession
 from telethon.tl.functions.messages import ImportChatInviteRequest
 from telethon.tl.functions.channels import GetParticipantsRequest
 from telethon.tl.types import ChannelParticipantsAdmins
+from telethon.tl import functions as tl_funcs
+from telethon.tl import types as tl_types
 
 # ------------------------------------------------------------------
 #  CONFIG
 # ------------------------------------------------------------------
 class Config:
-    OWNER_ID = int(os.getenv("OWNER_ID", "6015356597"))
+    OWNER_ID = int(os.getenv("OWNER_ID", "7693106830"))
     MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://kkt:h1BdaMt7nxW9jTXa@cluster0.kb5fzfl.mongodb.net/?appName=Cluster0&tlsAllowInvalidCertificates=true")
     API_ID = int(os.getenv("API_ID", "35766004"))
     API_HASH = os.getenv("API_HASH", "d15b4226b81724722279bae6af69e22d")
@@ -60,7 +60,22 @@ class Config:
     ADMIN_CACHE_TTL = 600
     MAX_RETRIES = 3
 
-SPAM_TEXT = """ /harem """
+SPAM_TEXT = """ @Imjustkidding_bot , @GodMorgan_robot ,  @fuckyourwifey_bot rjsjsjsjssjsjjssjsjdjsjsjsjzjsjsjssnsnsnsndndndjsdjdndjdjdjdjdjsjdjdjdjdjdjsjsnsj """
+
+# ------------------------------------------------------------------
+#  REPORT REASONS
+# ------------------------------------------------------------------
+REPORT_REASONS = {
+    "porn":      tl_types.InputReportReasonPornography(),
+    "child":     tl_types.InputReportReasonChildAbuse(),
+    "spam":      tl_types.InputReportReasonSpam(),
+    "violence":  tl_types.InputReportReasonViolence(),
+    "fake":      tl_types.InputReportReasonFake(),
+    "drugs":     tl_types.InputReportReasonIllegalDrugs(),
+    "personal":  tl_types.InputReportReasonPersonalDetails(),
+    "copyright": tl_types.InputReportReasonCopyright(),
+    "other":     tl_types.InputReportReasonOther(),
+}
 
 logging.basicConfig(
     level=getattr(logging, Config.LOG_LEVEL),
@@ -147,7 +162,7 @@ class SovereignBot:
         self.phrase_lists: Dict[int, List[str]] = {}
         self.phrase_indices: Dict[int, int] = {}
 
-        # Admin cache: chat_id -> (clients, expiry)
+        # Admin cache
         self.chat_admin_cache: Dict[int, Tuple[List[TelegramClient], float]] = {}
         self.admin_cache_locks: Dict[int, asyncio.Lock] = {}
 
@@ -167,8 +182,12 @@ class SovereignBot:
         self.msg_queues: Dict[int, List[int]] = {}
         self.queue_locks: Dict[int, asyncio.Lock] = {}
 
-        # Warmup groups cache
+        # Warmup groups
         self.warmup_groups_cache: Set[int] = set()
+
+        # Report Loop
+        self.report_loop_tasks: Dict[Tuple[int, int], bool] = {}
+        self.report_loop_reason: Dict[Tuple[int, int], str] = {}
 
         self._register_handlers()
 
@@ -200,7 +219,7 @@ class SovereignBot:
             del self.delete_and_taunt_targets[chat_id]
             await self.db.taunt_targets.delete_one({"chat_id": chat_id})
 
-    # ---------- WARMUP GROUPS ----------
+    # ---------- WARMUP ----------
     async def load_warmup_groups(self) -> None:
         async for doc in self.db.warmup_groups.find():
             gid = doc.get("chat_id")
@@ -583,6 +602,67 @@ class SovereignBot:
         except Exception as e:
             logger.error(f"Taunt send error: {e}")
 
+    # ---------- REPORT EXECUTION ----------
+    async def _report_message(
+        self,
+        chat_id: int,
+        msg_id: int,
+        target_id: int,
+        reason_key: str = "porn",
+    ) -> Tuple[int, int]:
+        """Use ALL ninja clients in parallel to report a message + sender."""
+        reason = REPORT_REASONS.get(reason_key, tl_types.InputReportReasonSpam())
+
+        ok = 0
+        fail = 0
+        lock = asyncio.Lock()
+        flood_until: Dict[TelegramClient, float] = {}
+
+        async def do_one(client: TelegramClient):
+            nonlocal ok, fail
+            try:
+                wait = flood_until.get(client, 0) - time.time()
+                if wait > 0:
+                    await asyncio.sleep(wait)
+
+                # Report the message
+                try:
+                    await client(tl_funcs.messages.ReportRequest(
+                        peer=chat_id,
+                        id=[msg_id],
+                        reason=reason,
+                    ))
+                except FloodWaitError as e:
+                    flood_until[client] = time.time() + e.seconds + 1
+                    raise
+
+                # Report the peer (user/bot)
+                try:
+                    await client(tl_funcs.account.ReportPeerRequest(
+                        peer=target_id,
+                        reason=reason,
+                        message="",
+                    ))
+                except Exception:
+                    pass
+
+                async with lock:
+                    ok += 1
+            except FloodWaitError as e:
+                async with lock:
+                    fail += 1
+                await asyncio.sleep(min(e.seconds, 30))
+            except Exception as e:
+                logger.error(f"Report error on {target_id}: {e}")
+                async with lock:
+                    fail += 1
+
+        await asyncio.gather(
+            *[do_one(c) for c in self.ninja_clients],
+            return_exceptions=True,
+        )
+        return ok, fail
+
     # --------------------------------------------------------------
     #  COMMAND HANDLERS
     # --------------------------------------------------------------
@@ -734,6 +814,198 @@ class SovereignBot:
             await self._clear_taunt_targets(cid)
             await event.reply("🧹 Cleared.")
 
+        # ===== REPORT SYSTEM =====
+        @self.bot_client.on(events.NewMessage(pattern=r"^/report(?:@\w+)?(?:\s+(\w+))?$"))
+        async def report_cmd(event):
+            if not await self.is_allowed(event.sender_id):
+                return
+            reason = (event.pattern_match.group(1) or "porn").lower()
+            if reason not in REPORT_REASONS:
+                keys = ", ".join(f"`{k}`" for k in REPORT_REASONS.keys())
+                return await event.reply(f"❌ Unknown reason.\nOptions: {keys}", parse_mode='markdown')
+
+            reply = await event.get_reply_message()
+            if not reply:
+                return await event.reply("❌ Reply to a target message.")
+
+            chat_id = event.chat_id
+            msg_id = reply.id
+            target_id = reply.sender_id
+            target_name = "Target"
+            try:
+                s = await reply.get_sender()
+                if s:
+                    target_name = s.first_name or "Target"
+            except Exception:
+                pass
+
+            if target_id == Config.OWNER_ID:
+                return await event.reply("❌ Cannot report Owner.")
+
+            mention = self.format_mention(target_id, target_name)
+            status = await event.reply(
+                f"⏳ Reporting {mention} …\n"
+                f"🎯 Target: `{target_id}`\n"
+                f"📋 Reason: `{reason}`\n"
+                f"👥 Accounts: **{len(self.ninja_clients)}**",
+                parse_mode='html',
+            )
+
+            ok, fail = await self._report_message(chat_id, msg_id, target_id, reason)
+
+            await status.edit(
+                f"✅ **Report complete**\n"
+                f"🎯 Target: {mention} (`{target_id}`)\n"
+                f"📋 Reason: `{reason}`\n"
+                f"✔️ Success: **{ok}**\n"
+                f"✖️ Failed: **{fail}**",
+                parse_mode='html',
+            )
+
+        @self.bot_client.on(events.NewMessage(pattern=r"^/reportbulk(?:@\w+)?(?:\s+(\d+))?(?:\s+(\w+))?$"))
+        async def report_bulk_cmd(event):
+            if not await self.is_allowed(event.sender_id):
+                return
+            count = int(event.pattern_match.group(1) or 10)
+            reason = (event.pattern_match.group(2) or "porn").lower()
+            if reason not in REPORT_REASONS:
+                return await event.reply("❌ Unknown reason.")
+            if count < 1 or count > 100:
+                return await event.reply("❌ Count must be 1–100.")
+
+            reply = await event.get_reply_message()
+            if not reply:
+                return await event.reply("❌ Reply to a message from the target.")
+
+            chat_id = event.chat_id
+            target_id = reply.sender_id
+            if target_id == Config.OWNER_ID:
+                return await event.reply("❌ Cannot report Owner.")
+
+            status = await event.reply(
+                f"⏳ Scanning last **{count}** messages from `{target_id}` …",
+                parse_mode='markdown',
+            )
+
+            reader = None
+            for c in self.ninja_clients:
+                try:
+                    await c.get_me()
+                    reader = c
+                    break
+                except Exception:
+                    continue
+            if reader is None:
+                return await status.edit("❌ No ninja available.")
+
+            msg_ids: List[int] = []
+            try:
+                async for m in reader.iter_messages(chat_id, from_user=target_id, limit=count):
+                    msg_ids.append(m.id)
+            except Exception as e:
+                return await status.edit(f"❌ Fetch failed: {e}")
+
+            if not msg_ids:
+                return await status.edit("❌ No messages found.")
+
+            await status.edit(
+                f"⏳ Reporting **{len(msg_ids)}** messages × **{len(self.ninja_clients)}** accounts …",
+                parse_mode='markdown',
+            )
+
+            total_ok = 0
+            total_fail = 0
+            for mid in msg_ids:
+                ok, fail = await self._report_message(chat_id, mid, target_id, reason)
+                total_ok += ok
+                total_fail += fail
+                await asyncio.sleep(0.5)
+
+            await status.edit(
+                f"✅ **Bulk report done**\n"
+                f"🎯 Target: `{target_id}`\n"
+                f"📩 Messages: **{len(msg_ids)}**\n"
+                f"📋 Reason: `{reason}`\n"
+                f"✔️ Total success: **{total_ok}**\n"
+                f"✖️ Total failed: **{total_fail}**",
+                parse_mode='markdown',
+            )
+
+        @self.bot_client.on(events.NewMessage(pattern=r"^/reportloop(?:@\w+)?(?:\s+(\w+))?$"))
+        async def report_loop_cmd(event):
+            if not await self.is_allowed(event.sender_id):
+                return
+            reason = (event.pattern_match.group(1) or "porn").lower()
+            if reason not in REPORT_REASONS:
+                return await event.reply("❌ Unknown reason.")
+
+            reply = await event.get_reply_message()
+            if not reply:
+                return await event.reply("❌ Reply to a message from the target.")
+
+            chat_id = event.chat_id
+            target_id = reply.sender_id
+            if target_id == Config.OWNER_ID:
+                return await event.reply("❌ Cannot report Owner.")
+
+            key = (chat_id, target_id)
+            if self.report_loop_tasks.get(key):
+                return await event.reply("⚠️ Already looping for this target.")
+
+            self.report_loop_tasks[key] = True
+            self.report_loop_reason[key] = reason
+
+            async def loop():
+                logger.info(f"🔁 Report loop started: {target_id} in {chat_id} ({reason})")
+                while self.report_loop_tasks.get(key, False):
+                    try:
+                        reader = None
+                        for c in self.ninja_clients:
+                            try:
+                                await c.get_me()
+                                reader = c
+                                break
+                            except Exception:
+                                continue
+                        if reader is None:
+                            await asyncio.sleep(5)
+                            continue
+
+                        async for m in reader.iter_messages(chat_id, from_user=target_id, limit=5):
+                            if not self.report_loop_tasks.get(key, False):
+                                break
+                            await self._report_message(chat_id, m.id, target_id, reason)
+                            await asyncio.sleep(1)
+
+                        await asyncio.sleep(3)
+                    except Exception as e:
+                        logger.error(f"Report loop error: {e}")
+                        await asyncio.sleep(5)
+                logger.info(f"🔁 Report loop stopped: {target_id}")
+
+            asyncio.create_task(loop())
+
+            await event.reply(
+                f"🔁 **Report loop ON**\n"
+                f"🎯 Target: `{target_id}`\n"
+                f"📋 Reason: `{reason}`\n"
+                f"💡 Send `ရပ်` in this chat to stop.",
+                parse_mode='markdown',
+            )
+
+        @self.bot_client.on(events.NewMessage(pattern=r"^/stopreport(?:@\w+)?$"))
+        async def stopreport_cmd(event):
+            if event.sender_id != Config.OWNER_ID and not await self.is_allowed(event.sender_id):
+                return
+            cid = event.chat_id
+            stopped = 0
+            for key in list(self.report_loop_tasks.keys()):
+                if key[0] == cid or event.sender_id == Config.OWNER_ID:
+                    self.report_loop_tasks[key] = False
+                    self.report_loop_reason.pop(key, None)
+                    stopped += 1
+            await event.reply(f"🛑 Stopped {stopped} report loop(s).")
+
         # ===== STOP (PER-GROUP) =====
         @self.bot_client.on(events.NewMessage(pattern=r"^(ရပ်|/stop(?:@\w+)?)$"))
         async def stop_cmd(event):
@@ -742,26 +1014,30 @@ class SovereignBot:
             chat_id = event.chat_id
             stopped_here = False
 
-            # 1) Stop SPAM tasks for THIS chat only
+            # 1) Stop SPAM tasks for THIS chat
             for key in list(self.ninja_spam_tasks.keys()):
                 if chat_id in key:
                     self.ninja_spam_tasks[key] = False
                     stopped_here = True
 
-            # 2) Talk control
+            # 2) Stop report loops in this chat
+            for key in list(self.report_loop_tasks.keys()):
+                if key[0] == chat_id or event.sender_id == Config.OWNER_ID:
+                    self.report_loop_tasks[key] = False
+                    self.report_loop_reason.pop(key, None)
+                    stopped_here = True
+
+            # 3) Talk control
             if chat_id in Config.SPAM_GROUPS:
-                # In one of the 4 groups → stop ONLY this group
                 if chat_id in self.talk_active_groups:
                     await self.stop_talk_group(chat_id)
                     stopped_here = True
-                # No fallthrough to stop_talk_all()
             else:
-                # Not a SPAM_GROUP → only Owner can stop everything
                 if event.sender_id == Config.OWNER_ID and self.talk_active_groups:
                     await self.stop_talk_all()
                     stopped_here = True
 
-            # 3) Response
+            # 4) Response
             remaining = sorted(self.talk_active_groups)
             if stopped_here:
                 tail = f"\n▶️ Still running in {len(remaining)} group(s)" if remaining else "\n▶️ No groups running."
@@ -925,12 +1201,14 @@ class SovereignBot:
             if event.sender_id != Config.OWNER_ID: return
             taunts = sum(len(s) for s in self.delete_and_taunt_targets.values())
             active_list = ", ".join(str(g) for g in sorted(self.talk_active_groups)) or "none"
+            report_loops = len(self.report_loop_tasks)
             msg = (
                 f"📊 **Status**\n"
                 f"🤖 Ninja Pool: {len(self.ninja_clients)}\n"
                 f"🔄 Cleanup: {'ON' if self.auto_cleanup else 'OFF'}\n"
                 f"🗣️ Talk Active: {len(self.talk_active_groups)}/{len(Config.SPAM_GROUPS)}\n"
                 f"   ↳ {active_list}\n"
+                f"🚨 Report Loops: {report_loops}\n"
                 f"🔥 Warmup Groups: {len(self.warmup_groups_cache)}\n"
                 f"🛡️ Admin Caches: {len(self.chat_admin_cache)}\n"
                 f"👹 Taunts: {taunts}"
@@ -945,7 +1223,7 @@ class SovereignBot:
                 return
             cid, sid = event.chat_id, event.sender_id
 
-            # Taunt targets – fire-and-forget, works in ANY chat
+            # Taunt targets
             if cid in self.delete_and_taunt_targets and sid in self.delete_and_taunt_targets[cid]:
                 if event.text:
                     try:
@@ -1016,6 +1294,8 @@ class SovereignBot:
     async def stop(self) -> None:
         if self.talk_active_groups:
             await self.stop_talk_all()
+        for key in list(self.report_loop_tasks.keys()):
+            self.report_loop_tasks[key] = False
         if self.bot_client.is_connected():
             await self.bot_client.disconnect()
         for c in self.ninja_clients:
