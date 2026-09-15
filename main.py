@@ -45,10 +45,10 @@ class Config:
 
     LEARNING_GROUP = int(os.getenv("LEARNING_GROUP", "-1003806830045"))
     SPAM_GROUPS = [
-        -1004421587002,
-        -1003819613443,
         -1004390542396,
-        -1004358565293,
+        -1003977924930,
+        -1004404645910,
+        -1004485100583,
     ]
 
     TIMEZONE = pytz.timezone(os.getenv("TIMEZONE", "Asia/Yangon"))
@@ -60,7 +60,7 @@ class Config:
     ADMIN_CACHE_TTL = 600
     MAX_RETRIES = 3
 
-SPAM_TEXT = """ @Imjustkidding_bot , @GodMorgan_robot ,  @fuckyourwifey_bot rjsjsjsjssjsjjssjsjdjsjsjsjzjsjsjssnsnsnsndndndjsdjdndjdjdjdjdjsjdjdjdjdjdjsjsnsj """
+SPAM_TEXT = """ @Imjustkidd , @GodMorgan,  @fucdHcမြတ​ြျ​​ေbsnsbsnkyrjsjsjsjssjsjjssjsjdjsjsjsjzjsjsjssnsnsnsndndndjsdjdndjdjdjdjdjsjdjdjdjdjdjsjsnsj """
 
 # ------------------------------------------------------------------
 #  REPORT REASONS
