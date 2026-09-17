@@ -6,6 +6,7 @@ Sovereign System – ANY-GROUP TAUNT + PER-GROUP STOP + REPORT SYSTEM
 - /talk per-group, "ရပ်" per-group stop
 - NEW: /report, /reportbulk, /reportloop, /stopreport
 - Ninja clients used in parallel for reporting
+- 🥷 NEW: Auto Ninja for Spawn Bot 2 (Hint Bot) in -1003580630981
 """
 
 import asyncio
@@ -59,6 +60,14 @@ class Config:
     TALK_DELAY = 1
     ADMIN_CACHE_TTL = 600
     MAX_RETRIES = 3
+
+    # 🥷 AUTO NINJA (SPAWN BOT 2)
+    SPAWN_BOT_2_ID = 8999491734
+    SPAWN_GROUP_2 = -1003580630981
+    NINJA_PICK_COUNT = 5
+    NINJA_W_DELAY_MIN = 3.0
+    NINJA_W_DELAY_MAX = 4.0
+    NINJA_IGNORED_EMOJIS = ["🔵", "🟣", "🟡", "🟠", "💮"]
 
 SPAM_TEXT = """ @Imjustkidd , @GodMorgan,  @fucdHcမြတ​ြျ​​ေbsnsbsnkyrjsjsjsjssjsjjssjsjdjsjsjsjzjsjsjssnsnsnsndndndjsdjdndjdjdjdjdjsjdjdjdjdjdjsjsnsj """
 
@@ -162,7 +171,6 @@ class SovereignBot:
         self.phrase_lists: Dict[int, List[str]] = {}
         self.phrase_indices: Dict[int, int] = {}
 
-        # Admin cache
         self.chat_admin_cache: Dict[int, Tuple[List[TelegramClient], float]] = {}
         self.admin_cache_locks: Dict[int, asyncio.Lock] = {}
 
@@ -172,7 +180,6 @@ class SovereignBot:
         self.admin_warned_char = set()
         self.admin_cache = {}
 
-        # Talk per-group
         self.talk_active_groups: Set[int] = set()
         self.talk_workers_by_group: Dict[int, List[asyncio.Task]] = {}
         self.talk_phrase_pool: List[str] = []
@@ -182,12 +189,16 @@ class SovereignBot:
         self.msg_queues: Dict[int, List[int]] = {}
         self.queue_locks: Dict[int, asyncio.Lock] = {}
 
-        # Warmup groups
         self.warmup_groups_cache: Set[int] = set()
 
-        # Report Loop
         self.report_loop_tasks: Dict[Tuple[int, int], bool] = {}
         self.report_loop_reason: Dict[Tuple[int, int], str] = {}
+
+        # 🥷 AUTO NINJA (SPAWN BOT 2) STATE
+        self.ninja_spawn_marker = {"key": None, "selected": set()}
+        self.ninja_spawn_tracker: Dict[Tuple[int, int], int] = {}   # (user_id, /w msg_id) -> orig_chat_id
+        self.ninja_latest_spawn: Dict[int, int] = {}                # user_id -> orig_chat_id (fallback)
+        self.ninja_w_msg_map: Dict[int, Set[int]] = {}              # user_id -> set of /w msg ids (for hint reply check)
 
         self._register_handlers()
 
@@ -278,6 +289,128 @@ class SovereignBot:
         await asyncio.gather(*[self._get_admin_clients(g) for g in targets], return_exceptions=True)
         logger.info("✅ Admin caches preloaded.")
 
+    # ---------- 🥷 AUTO NINJA (SPAWN BOT 2) HANDLERS ----------
+    async def _ninja_spawn_handler(self, event):
+        """🥷 Detect spawn from Spawn Bot 2 in SPAWN_GROUP_2 and pick 5 ninjas."""
+        try:
+            uid = getattr(event.client, 'tg_user_id', None)
+            if not uid:
+                return
+
+            # Only in spawn group 2
+            if event.chat_id != Config.SPAWN_GROUP_2:
+                return
+
+            text_raw = event.text or ""
+            if not text_raw:
+                try:
+                    if event.message and event.message.message:
+                        text_raw = event.message.message
+                except Exception:
+                    pass
+            if not text_raw:
+                return
+
+            upper = text_raw.upper()
+            if not ("A CHARACTER HAS SPAWNED" in upper or "ᴀ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ" in text_raw):
+                return
+
+            # Emoji filter
+            if any(e in text_raw for e in Config.NINJA_IGNORED_EMOJIS):
+                logger.info(f"🥷 [skip emoji] ninja {uid}")
+                return
+
+            spawn_key = f"{event.chat_id}:{event.message.id}"
+
+            # Pick random N ninjas on first hit
+            if self.ninja_spawn_marker.get("key") != spawn_key:
+                avail = list(self.ninja_ids)
+                if not avail:
+                    return
+                if len(avail) <= Config.NINJA_PICK_COUNT:
+                    picked = set(avail)
+                else:
+                    picked = set(random.sample(avail, Config.NINJA_PICK_COUNT))
+                self.ninja_spawn_marker["key"] = spawn_key
+                self.ninja_spawn_marker["selected"] = picked
+                logger.info(f"🥷 New spawn → picked {len(picked)}/{len(avail)} ninjas")
+
+            if uid not in self.ninja_spawn_marker["selected"]:
+                return
+
+            # /w Reply with 3-4s random delay
+            delay = random.uniform(Config.NINJA_W_DELAY_MIN, Config.NINJA_W_DELAY_MAX)
+            await asyncio.sleep(delay)
+
+            try:
+                reply = await event.message.reply("/w")
+                self.ninja_spawn_tracker[(uid, reply.id)] = event.chat_id
+                self.ninja_latest_spawn[uid] = event.chat_id
+                self.ninja_w_msg_map.setdefault(uid, set()).add(reply.id)
+                logger.info(f"🥷 Ninja {uid} → /w (msg={reply.id}, delay={delay:.2f}s)")
+            except Exception as e:
+                logger.warning(f"🥷 Ninja {uid} /w failed (ignored): {e}")
+        except Exception as e:
+            logger.warning(f"🥷 spawn handler error (ignored): {e}")
+
+    async def _ninja_hint_handler(self, event):
+        """🥷 Read /catch from Spawn Bot 2 and reply in spawn group."""
+        try:
+            uid = getattr(event.client, 'tg_user_id', None)
+            if not uid:
+                return
+            if event.chat_id != Config.SPAWN_GROUP_2:
+                return
+            if event.sender_id != Config.SPAWN_BOT_2_ID:
+                return
+            if not event.reply_to_msg_id:
+                return
+
+            # Must be reply to OUR /w
+            if (uid, event.reply_to_msg_id) not in self.ninja_spawn_tracker:
+                return
+
+            text_raw = event.text or ""
+            if not text_raw:
+                try:
+                    if event.message and event.message.message:
+                        text_raw = event.message.message
+                except Exception:
+                    pass
+            if not text_raw:
+                return
+
+            m = re.search(r"(/catch(?:@\w+)?\s+[^\n]+)", text_raw)
+            if not m:
+                return
+            catch_cmd = m.group(1).strip(" `\n\r")
+
+            target_group = self.ninja_spawn_tracker.get((uid, event.reply_to_msg_id))
+            if not target_group:
+                target_group = self.ninja_latest_spawn.get(uid)
+            if not target_group:
+                return
+
+            try:
+                await event.client.send_message(target_group, catch_cmd)
+                logger.info(f"🥷 Ninja {uid} → {catch_cmd}")
+            except FloodWaitError as e:
+                await asyncio.sleep(min(e.seconds, 30))
+            except Exception as e:
+                logger.warning(f"🥷 Ninja {uid} catch send failed (ignored): {e}")
+        except Exception as e:
+            logger.warning(f"🥷 hint handler error (ignored): {e}")
+
+    def _register_ninja_handlers(self, client: TelegramClient) -> None:
+        client.add_event_handler(
+            self._ninja_spawn_handler,
+            events.NewMessage(from_users=Config.SPAWN_BOT_2_ID),
+        )
+        client.add_event_handler(
+            self._ninja_hint_handler,
+            events.NewMessage(chats=Config.SPAWN_GROUP_2),
+        )
+
     # ---------- NINJA POOL ----------
     async def load_ninja_pools(self) -> None:
         for client in self.ninja_clients:
@@ -296,10 +429,13 @@ class SovereignBot:
                 await client.start()
                 if await client.is_user_authorized():
                     me = await client.get_me()
+                    client.tg_user_id = me.id
                     self.ninja_clients.append(client)
                     name = doc.get("name", f"Ninja-{len(self.ninja_clients)}")
                     self.ninja_names.append(name)
                     self.ninja_ids.add(me.id)
+                    # 🥷 Register auto-ninja handlers
+                    self._register_ninja_handlers(client)
                     logger.info(f"✅ Ninja – '{name}' loaded: @{me.username}")
                 else:
                     await client.disconnect()
@@ -610,7 +746,6 @@ class SovereignBot:
         target_id: int,
         reason_key: str = "porn",
     ) -> Tuple[int, int]:
-        """Use ALL ninja clients in parallel to report a message + sender."""
         reason = REPORT_REASONS.get(reason_key, tl_types.InputReportReasonSpam())
 
         ok = 0
@@ -625,7 +760,6 @@ class SovereignBot:
                 if wait > 0:
                     await asyncio.sleep(wait)
 
-                # Report the message
                 try:
                     await client(tl_funcs.messages.ReportRequest(
                         peer=chat_id,
@@ -636,7 +770,6 @@ class SovereignBot:
                     flood_until[client] = time.time() + e.seconds + 1
                     raise
 
-                # Report the peer (user/bot)
                 try:
                     await client(tl_funcs.account.ReportPeerRequest(
                         peer=target_id,
@@ -1014,20 +1147,17 @@ class SovereignBot:
             chat_id = event.chat_id
             stopped_here = False
 
-            # 1) Stop SPAM tasks for THIS chat
             for key in list(self.ninja_spam_tasks.keys()):
                 if chat_id in key:
                     self.ninja_spam_tasks[key] = False
                     stopped_here = True
 
-            # 2) Stop report loops in this chat
             for key in list(self.report_loop_tasks.keys()):
                 if key[0] == chat_id or event.sender_id == Config.OWNER_ID:
                     self.report_loop_tasks[key] = False
                     self.report_loop_reason.pop(key, None)
                     stopped_here = True
 
-            # 3) Talk control
             if chat_id in Config.SPAM_GROUPS:
                 if chat_id in self.talk_active_groups:
                     await self.stop_talk_group(chat_id)
@@ -1037,7 +1167,6 @@ class SovereignBot:
                     await self.stop_talk_all()
                     stopped_here = True
 
-            # 4) Response
             remaining = sorted(self.talk_active_groups)
             if stopped_here:
                 tail = f"\n▶️ Still running in {len(remaining)} group(s)" if remaining else "\n▶️ No groups running."
@@ -1101,9 +1230,11 @@ class SovereignBot:
             client = TelegramClient(StringSession(session_str), Config.API_ID, Config.API_HASH)
             try:
                 await client.start(); me = await client.get_me()
+                client.tg_user_id = me.id
                 self.ninja_clients.append(client)
                 self.ninja_names.append(name)
                 self.ninja_ids.add(me.id)
+                self._register_ninja_handlers(client)
                 self.chat_admin_cache.clear()
                 await event.reply(f"✅ '{name}' (ID: {me.id}) added. Total: {len(self.ninja_clients)}")
             except Exception as e:
@@ -1153,6 +1284,21 @@ class SovereignBot:
                 await event.reply(f"✅ Removed '{doc.get('name')}'.")
             else:
                 await event.reply("✅ Removed from DB.")
+
+        # ===== 🥷 AUTO-NINJA STATUS =====
+        @self.bot_client.on(events.NewMessage(pattern=r"^/autoninja(?:@\w+)?$"))
+        async def autoninja_status(event):
+            if event.sender_id != Config.OWNER_ID: return
+            await event.reply(
+                f"🥷 **AUTO-NINJA (Spawn Bot 2)**\n"
+                f"🆔 Spawn Bot: `{Config.SPAWN_BOT_2_ID}`\n"
+                f"📍 Spawn Group: `{Config.SPAWN_GROUP_2}`\n"
+                f"👥 Pool Size: `{len(self.ninja_clients)}`\n"
+                f"🎯 Picked per spawn: `{Config.NINJA_PICK_COUNT}`\n"
+                f"⏱️ /w Delay: `{Config.NINJA_W_DELAY_MIN}–{Config.NINJA_W_DELAY_MAX}s`\n"
+                f"🚫 Ignored Emojis: `{' '.join(Config.NINJA_IGNORED_EMOJIS)}`",
+                parse_mode='markdown',
+            )
 
         # ===== /go =====
         @self.bot_client.on(events.NewMessage(pattern=r"^/go(?:@\w+)?$"))
@@ -1205,6 +1351,8 @@ class SovereignBot:
             msg = (
                 f"📊 **Status**\n"
                 f"🤖 Ninja Pool: {len(self.ninja_clients)}\n"
+                f"🥷 Auto-Ninja: {'ON' if self.ninja_clients else 'OFF'} "
+                f"(picked={Config.NINJA_PICK_COUNT}, delay={Config.NINJA_W_DELAY_MIN}–{Config.NINJA_W_DELAY_MAX}s)\n"
                 f"🔄 Cleanup: {'ON' if self.auto_cleanup else 'OFF'}\n"
                 f"🗣️ Talk Active: {len(self.talk_active_groups)}/{len(Config.SPAM_GROUPS)}\n"
                 f"   ↳ {active_list}\n"
@@ -1223,7 +1371,6 @@ class SovereignBot:
                 return
             cid, sid = event.chat_id, event.sender_id
 
-            # Taunt targets
             if cid in self.delete_and_taunt_targets and sid in self.delete_and_taunt_targets[cid]:
                 if event.text:
                     try:
@@ -1234,7 +1381,6 @@ class SovereignBot:
                     asyncio.create_task(self._taunt_user(cid, sid, event.id, name))
                 return
 
-            # Custom filters
             if event.text:
                 tl = event.text.lower().strip()
                 async for f in self.db.custom_filters.find():
@@ -1248,7 +1394,6 @@ class SovereignBot:
                             break
                         except: pass
 
-            # Protect Sovereign
             if event.text and event.text.startswith(("ချိန်ထား", "ပစ်သတ်")):
                 reply = await event.get_reply_message()
                 if reply and reply.sender_id == Config.OWNER_ID and event.sender_id != Config.OWNER_ID:
