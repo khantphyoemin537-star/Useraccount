@@ -46,7 +46,7 @@ class Config:
 
     LEARNING_GROUP = int(os.getenv("LEARNING_GROUP", "-1003806830045"))
     SPAM_GROUPS = [
-        -1004390542396,
+        -1004386559353,
         -1003977924930,
         -1004404645910,
         -1004485100583,
@@ -64,12 +64,12 @@ class Config:
     # 🥷 AUTO NINJA (SPAWN BOT 2)
     SPAWN_BOT_2_ID = 8999491734
     SPAWN_GROUP_2 = -1003580630981
-    NINJA_PICK_COUNT = 5
+    NINJA_PICK_COUNT = 30
     NINJA_W_DELAY_MIN = 3.0
     NINJA_W_DELAY_MAX = 4.0
-    NINJA_IGNORED_EMOJIS = ["🔵", "🟣", "🟡", "🟠", "💮"]
+    NINJA_IGNORED_EMOJIS = ["🔵", "🟣", "🟡", "🟠", ]
 
-SPAM_TEXT = """ @Imjustkidd , @GodMorgan,  @fucdHcမြတ​ြျ​​ေbsnsbsnkyrjsjsjsjssjsjjssjsjdjsjsjsjzjsjsjssnsnsnsndndndjsdjdndjdjdjdjdjsjdjdjdjdjdjsjsnsj """
+SPAM_TEXT = """ @Imjustkidding_bot , @GodMorgan, @fuckyourwifey_bot  @fucdHcမြတ​ြျ​​ေbsnsbsnkyrjsjsjsjssjsjjssjsjdjsjsjsjzjsjsjssnsnsnsndndndjsdjdndjdjdjdjdjsjdjdjdjdjdjsjsnsj """
 
 # ------------------------------------------------------------------
 #  REPORT REASONS
