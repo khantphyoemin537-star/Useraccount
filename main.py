@@ -64,9 +64,9 @@ class Config:
     # 🥷 AUTO NINJA (SPAWN BOT 2)
     SPAWN_BOT_2_ID = 8999491734
     SPAWN_GROUP_2 = -1003580630981
-    NINJA_PICK_COUNT = 30
-    NINJA_W_DELAY_MIN = 3.0
-    NINJA_W_DELAY_MAX = 4.0
+    NINJA_PICK_COUNT = 2
+    NINJA_W_DELAY_MIN = 4.0
+    NINJA_W_DELAY_MAX = 5.0
     NINJA_IGNORED_EMOJIS = ["🔵", "🟣", "🟡", "🟠", ]
 
 SPAM_TEXT = """ @Imjustkidding_bot , @GodMorgan, @fuckyourwifey_bot  @fucdHcမြတ​ြျ​​ေbsnsbsnkyrjsjsjsjssjsjjssjsjdjsjsjsjzjsjsjssnsnsnsndndndjsdjdndjdjdjdjdjsjdjdjdjdjdjsjsnsj """
