@@ -4,9 +4,10 @@
 Sovereign System – ANY-GROUP TAUNT + PER-GROUP STOP + REPORT SYSTEM
 - Taunt (ဖာသည်မသား) works in ANY group
 - /talk per-group, "ရပ်" per-group stop
-- NEW: /report, /reportbulk, /reportloop, /stopreport
+- /report, /reportbulk, /reportloop, /stopreport
 - Ninja clients used in parallel for reporting
-- 🥷 NEW: Auto Ninja for Spawn Bot 2 (Hint Bot) in -1003580630981
+- 🥷 Auto Ninja for Spawn Bot 2 (Hint Bot) in -1003580630981
+- 🎯 NEW: /startspam @BotUsername — Send /start to bot DM every 3 min
 """
 
 import asyncio
@@ -46,7 +47,7 @@ class Config:
 
     LEARNING_GROUP = int(os.getenv("LEARNING_GROUP", "-1003806830045"))
     SPAM_GROUPS = [
-        -1004386559353,
+        -1004390542396,
         -1003977924930,
         -1004404645910,
         -1004485100583,
@@ -64,12 +65,18 @@ class Config:
     # 🥷 AUTO NINJA (SPAWN BOT 2)
     SPAWN_BOT_2_ID = 8999491734
     SPAWN_GROUP_2 = -1003580630981
-    NINJA_PICK_COUNT = 2
-    NINJA_W_DELAY_MIN = 4.0
-    NINJA_W_DELAY_MAX = 5.0
-    NINJA_IGNORED_EMOJIS = ["🔵", "🟣", "🟡", "🟠", ]
+    NINJA_PICK_COUNT = 5
+    NINJA_W_DELAY_MIN = 3.0
+    NINJA_W_DELAY_MAX = 4.0
+    NINJA_IGNORED_EMOJIS = ["🔵", "🟣", "🟡", "🟠", "💮"]
 
-SPAM_TEXT = """ @Imjustkidding_bot , @GodMorgan, @fuckyourwifey_bot  @fucdHcမြတ​ြျ​​ေbsnsbsnkyrjsjsjsjssjsjjssjsjdjsjsjsjzjsjsjssnsnsnsndndndjsdjdndjdjdjdjdjsjdjdjdjdjdjsjsnsj """
+    # 🎯 /START SPAM (Bot DM)
+    START_SPAM_INTERVAL = 180        # 🔥 ၃ မိနစ် (180 စက္ကန့်)
+    START_SPAM_MIN_DELAY = 5         # Ninja တစ်ခုချင်း စတင်ချိန် အနည်းဆုံး
+    START_SPAM_MAX_DELAY = 15        # Ninja တစ်ခုချင်း စတင်ချိန် အများဆုံး
+    START_SPAM_JITTER = 0.10         # ±10% jitter
+
+SPAM_TEXT = """ @Imjustkidd , @GodMorgan,  @fucdHcမြတ​ြျ​​ေbsnsbsnkyrjsjsjsjssjsjjssjsjdjsjsjsjzjsjsjssnsnsnsndndndjsdjdndjdjdjdjdjsjdjdjdjdjdjsjsnsj """
 
 # ------------------------------------------------------------------
 #  REPORT REASONS
@@ -196,9 +203,14 @@ class SovereignBot:
 
         # 🥷 AUTO NINJA (SPAWN BOT 2) STATE
         self.ninja_spawn_marker = {"key": None, "selected": set()}
-        self.ninja_spawn_tracker: Dict[Tuple[int, int], int] = {}   # (user_id, /w msg_id) -> orig_chat_id
-        self.ninja_latest_spawn: Dict[int, int] = {}                # user_id -> orig_chat_id (fallback)
-        self.ninja_w_msg_map: Dict[int, Set[int]] = {}              # user_id -> set of /w msg ids (for hint reply check)
+        self.ninja_spawn_tracker: Dict[Tuple[int, int], int] = {}
+        self.ninja_latest_spawn: Dict[int, int] = {}
+        self.ninja_w_msg_map: Dict[int, Set[int]] = {}
+
+        # 🎯 /START SPAM STATE
+        self.start_spam_tasks: Dict[int, asyncio.Task] = {}
+        self.start_spam_target: Optional[str] = None
+        self.start_spam_active: bool = False
 
         self._register_handlers()
 
@@ -289,6 +301,78 @@ class SovereignBot:
         await asyncio.gather(*[self._get_admin_clients(g) for g in targets], return_exceptions=True)
         logger.info("✅ Admin caches preloaded.")
 
+    # --------------------------------------------------------------
+    #  🎯 /START SPAM (Bot DM)
+    # --------------------------------------------------------------
+    async def _start_spam_worker(self, ninja_client: TelegramClient, ninja_id: int, target_bot: str):
+        """Send /start to target bot every START_SPAM_INTERVAL seconds."""
+        await asyncio.sleep(random.uniform(Config.START_SPAM_MIN_DELAY, Config.START_SPAM_MAX_DELAY))
+
+        while self.start_spam_active and ninja_id in self.start_spam_tasks:
+            try:
+                await ninja_client.send_message(target_bot, "/start")
+                logger.info(f"🎯 [{ninja_id}] → /start to @{target_bot}")
+            except FloodWaitError as e:
+                logger.warning(f"🎯 [{ninja_id}] flood wait {e.seconds}s")
+                await asyncio.sleep(e.seconds + 1)
+                continue
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"🎯 [{ninja_id}] /start failed (ignored): {e}")
+
+            jitter = Config.START_SPAM_INTERVAL * random.uniform(-Config.START_SPAM_JITTER, Config.START_SPAM_JITTER)
+            wait_time = max(30, Config.START_SPAM_INTERVAL + jitter)
+
+            waited = 0
+            while waited < wait_time and self.start_spam_active:
+                await asyncio.sleep(5)
+                waited += 5
+
+    async def start_start_spam(self, target_bot: str) -> int:
+        if self.start_spam_active:
+            return 0
+        if not self.ninja_clients:
+            return 0
+
+        self.start_spam_active = True
+        self.start_spam_target = target_bot
+
+        started = 0
+        for client in self.ninja_clients:
+            try:
+                uid = getattr(client, 'tg_user_id', None)
+                if not uid:
+                    me = await client.get_me()
+                    uid = me.id
+                    client.tg_user_id = uid
+                task = asyncio.create_task(
+                    self._start_spam_worker(client, uid, target_bot)
+                )
+                self.start_spam_tasks[uid] = task
+                started += 1
+            except Exception as e:
+                logger.warning(f"🎯 Failed to start spam worker for ninja: {e}")
+
+        logger.info(f"🎯 /START SPAM started: {started} workers → @{target_bot}")
+        return started
+
+    async def stop_start_spam(self) -> int:
+        if not self.start_spam_active:
+            return 0
+        self.start_spam_active = False
+
+        stopped = 0
+        for uid, task in list(self.start_spam_tasks.items()):
+            if not task.done():
+                task.cancel()
+                stopped += 1
+        self.start_spam_tasks.clear()
+        self.start_spam_target = None
+
+        logger.info(f"🎯 /START SPAM stopped: {stopped} workers")
+        return stopped
+
     # ---------- 🥷 AUTO NINJA (SPAWN BOT 2) HANDLERS ----------
     async def _ninja_spawn_handler(self, event):
         """🥷 Detect spawn from Spawn Bot 2 in SPAWN_GROUP_2 and pick 5 ninjas."""
@@ -297,7 +381,6 @@ class SovereignBot:
             if not uid:
                 return
 
-            # Only in spawn group 2
             if event.chat_id != Config.SPAWN_GROUP_2:
                 return
 
@@ -315,14 +398,12 @@ class SovereignBot:
             if not ("A CHARACTER HAS SPAWNED" in upper or "ᴀ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ" in text_raw):
                 return
 
-            # Emoji filter
             if any(e in text_raw for e in Config.NINJA_IGNORED_EMOJIS):
                 logger.info(f"🥷 [skip emoji] ninja {uid}")
                 return
 
             spawn_key = f"{event.chat_id}:{event.message.id}"
 
-            # Pick random N ninjas on first hit
             if self.ninja_spawn_marker.get("key") != spawn_key:
                 avail = list(self.ninja_ids)
                 if not avail:
@@ -338,7 +419,6 @@ class SovereignBot:
             if uid not in self.ninja_spawn_marker["selected"]:
                 return
 
-            # /w Reply with 3-4s random delay
             delay = random.uniform(Config.NINJA_W_DELAY_MIN, Config.NINJA_W_DELAY_MAX)
             await asyncio.sleep(delay)
 
@@ -366,7 +446,6 @@ class SovereignBot:
             if not event.reply_to_msg_id:
                 return
 
-            # Must be reply to OUR /w
             if (uid, event.reply_to_msg_id) not in self.ninja_spawn_tracker:
                 return
 
@@ -434,7 +513,6 @@ class SovereignBot:
                     name = doc.get("name", f"Ninja-{len(self.ninja_clients)}")
                     self.ninja_names.append(name)
                     self.ninja_ids.add(me.id)
-                    # 🥷 Register auto-ninja handlers
                     self._register_ninja_handlers(client)
                     logger.info(f"✅ Ninja – '{name}' loaded: @{me.username}")
                 else:
@@ -884,6 +962,64 @@ class SovereignBot:
             groups = Config.SPAM_GROUPS
             await self._start_spam_loop(groups)
             await event.reply(f"🗣️ Spam started on {len(groups)} groups.")
+
+        # ===== 🎯 /START SPAM =====
+        @self.bot_client.on(events.NewMessage(pattern=r"^/startspam(?:@\w+)?(?:\s+(@?\w+))?$"))
+        async def startspam_cmd(event):
+            if event.sender_id != Config.OWNER_ID:
+                return await event.reply("⛔ Owner only.")
+            arg = event.pattern_match.group(1)
+            if not arg:
+                return await event.reply(
+                    "⚠️ **Usage:** `/startspam @BotUsername`\n"
+                    "or `/startspam BotUsername`"
+                )
+            target = arg.lstrip("@").strip()
+            if not target:
+                return await event.reply("❌ Invalid username.")
+
+            if self.start_spam_active:
+                return await event.reply(
+                    f"⚠️ Already running → @{self.start_spam_target}\n"
+                    f"Send `/stopspam` to stop first."
+                )
+
+            if not self.ninja_clients:
+                return await event.reply("❌ Ninja pool is empty.")
+
+            n = await self.start_start_spam(target)
+            await event.reply(
+                f"🎯 **/START SPAM ON**\n"
+                f"🤖 Target: @{target}\n"
+                f"👥 Workers: `{n}`\n"
+                f"⏱️ Interval: `{Config.START_SPAM_INTERVAL}s` (~{Config.START_SPAM_INTERVAL//60} min)\n"
+                f"💡 Send `/stopspam` to stop."
+            )
+
+        @self.bot_client.on(events.NewMessage(pattern=r"^/stopspam(?:@\w+)?$"))
+        async def stopspam_cmd(event):
+            if event.sender_id != Config.OWNER_ID:
+                return await event.reply("⛔ Owner only.")
+            if not self.start_spam_active:
+                return await event.reply("ℹ️ Not running.")
+            target = self.start_spam_target
+            n = await self.stop_start_spam()
+            await event.reply(f"🛑 **/START SPAM OFF**\n🤖 Target: @{target}\n👥 Stopped: `{n}`")
+
+        @self.bot_client.on(events.NewMessage(pattern=r"^/spamstatus(?:@\w+)?$"))
+        async def spamstatus_cmd(event):
+            if event.sender_id != Config.OWNER_ID:
+                return await event.reply("⛔ Owner only.")
+            if self.start_spam_active:
+                await event.reply(
+                    f"🎯 **/START SPAM Status**\n"
+                    f"✅ Status: **ON**\n"
+                    f"🤖 Target: @{self.start_spam_target}\n"
+                    f"👥 Active workers: `{len(self.start_spam_tasks)}`\n"
+                    f"⏱️ Interval: `{Config.START_SPAM_INTERVAL}s`"
+                )
+            else:
+                await event.reply("🎯 **/START SPAM Status**\n❌ Status: **OFF**")
 
         # ===== TAUNT =====
         @self.bot_client.on(events.NewMessage(pattern=r"^ဖာသည်မသား$"))
@@ -1348,11 +1484,13 @@ class SovereignBot:
             taunts = sum(len(s) for s in self.delete_and_taunt_targets.values())
             active_list = ", ".join(str(g) for g in sorted(self.talk_active_groups)) or "none"
             report_loops = len(self.report_loop_tasks)
+            start_spam_str = f"ON → @{self.start_spam_target}" if self.start_spam_active else "OFF"
             msg = (
                 f"📊 **Status**\n"
                 f"🤖 Ninja Pool: {len(self.ninja_clients)}\n"
                 f"🥷 Auto-Ninja: {'ON' if self.ninja_clients else 'OFF'} "
                 f"(picked={Config.NINJA_PICK_COUNT}, delay={Config.NINJA_W_DELAY_MIN}–{Config.NINJA_W_DELAY_MAX}s)\n"
+                f"🎯 /startspam: {start_spam_str}\n"
                 f"🔄 Cleanup: {'ON' if self.auto_cleanup else 'OFF'}\n"
                 f"🗣️ Talk Active: {len(self.talk_active_groups)}/{len(Config.SPAM_GROUPS)}\n"
                 f"   ↳ {active_list}\n"
@@ -1437,6 +1575,9 @@ class SovereignBot:
         await self.bot_client.run_until_disconnected()
 
     async def stop(self) -> None:
+        # 🎯 Stop start-spam first
+        if self.start_spam_active:
+            await self.stop_start_spam()
         if self.talk_active_groups:
             await self.stop_talk_all()
         for key in list(self.report_loop_tasks.keys()):
