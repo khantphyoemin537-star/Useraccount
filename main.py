@@ -47,7 +47,7 @@ class Config:
 
     LEARNING_GROUP = int(os.getenv("LEARNING_GROUP", "-1003806830045"))
     SPAM_GROUPS = [
-        -1004390542396,
+        -1004386559353,
         -1003977924930,
         -1004404645910,
         -1004485100583,
@@ -68,7 +68,7 @@ class Config:
     NINJA_PICK_COUNT = 5
     NINJA_W_DELAY_MIN = 3.0
     NINJA_W_DELAY_MAX = 4.0
-    NINJA_IGNORED_EMOJIS = ["🔵", "🟣", "🟡", "🟠", "💮"]
+    NINJA_IGNORED_EMOJIS = ["🔵", "🟣", "🟠"]
 
     # 🎯 /START SPAM (Bot DM)
     START_SPAM_INTERVAL = 180        # 🔥 ၃ မိနစ် (180 စက္ကန့်)
