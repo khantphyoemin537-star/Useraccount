@@ -49,8 +49,8 @@ class Config:
     SPAM_GROUPS = [
         -1004386559353,
         -1003977924930,
-        -1004404645910,
-        -1004485100583,
+        -1003733625547,
+        -1004358425408,
     ]
 
     TIMEZONE = pytz.timezone(os.getenv("TIMEZONE", "Asia/Yangon"))
