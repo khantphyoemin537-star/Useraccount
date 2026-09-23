@@ -5,6 +5,7 @@
 - Auto-warmup on startup
 - Strict timeouts on every Telegram call
 - Full debug logging + /nsyncdebug
+- FIXED: ninja_clients + ninja_names are parallel lists, use zip()
 """
 
 import asyncio, io, logging, os, random, re, sys, threading, time, unicodedata
@@ -59,15 +60,15 @@ class Config:
     SYNC_END_ID              = int(os.getenv("SYNC_END_ID", "7203"))
     SYNC_SKIP_ALREADY_SYNCED = os.getenv("SYNC_SKIP_ALREADY_SYNCED", "true").lower() == "true"
 
-    SYNC_WARMUP_TIMEOUT       = 15    # hard cap per warm-up attempt
-    SYNC_WARMUP_DELAY         = 1.5   # after /start, before first .check
-    SYNC_REPLY_TIMEOUT        = 30    # per .check reply
+    SYNC_WARMUP_TIMEOUT       = 15
+    SYNC_WARMUP_DELAY         = 1.5
+    SYNC_REPLY_TIMEOUT        = 30
     SYNC_COOLDOWN_BACKOFF     = 5
     SYNC_MAX_COOLDOWN_RETRIES = 3
-    SYNC_NINJA_STAGGER        = 0.3   # between launching workers
-    SYNC_PACE_PER_CHECK       = 1.0   # between IDs on same ninja
+    SYNC_NINJA_STAGGER        = 0.3
+    SYNC_PACE_PER_CHECK       = 1.0
     SYNC_PROGRESS_INTERVAL    = 30
-    SYNC_AUTO_WARMUP_ON_BOOT  = True  # warm-up all ninjas right after startup
+    SYNC_AUTO_WARMUP_ON_BOOT  = True
 
 
 SPAM_TEXT = """ @FLASH_SPAM_Bot | @fuckyourwifey_bot | @Imjustkidding_bot | @GodMorgan_robot | @enforcermorgan_11robot | fqcawqAaaaafbBsqqlqoျဘျဆငငေတငတုsahqBwqiqoaj#!11&$1(!92929*@*@>>
@@ -102,6 +103,7 @@ _RARITY_VALUE_MAP = {"SUPREME": 100000, "CATAPHRACT": 70000, "CROSSVERSE": 50000
                      "MYSTICAL": 25000, "LEGENDARY": 15000, "RARE": 10000, "UNCOMMON": 6000, "COMMON": 3000}
 CNFT_DEFAULT_VALUE = 100000
 
+
 def _build_fancy_font_reverse_map():
     m = {}
     for cp in range(0x1D400, 0x1D800):
@@ -118,10 +120,13 @@ def _build_fancy_font_reverse_map():
             elif "CAPITAL" in toks: m[chr(cp)] = last.upper()
     return m
 
+
 _FANCY_TO_PLAIN = str.maketrans(_build_fancy_font_reverse_map())
+
 
 def is_cnft_rarity(r):
     return bool(r) and "CNFT" in r.translate(_FANCY_TO_PLAIN).upper()
+
 
 def extract_cnft_tier(r):
     if not r: return None
@@ -132,6 +137,7 @@ def extract_cnft_tier(r):
     suf = (m.group(1) or "").strip()
     suf = re.sub(r'\s+', ' ', suf)
     return f"CNFT {suf}".strip() if suf else "CNFT"
+
 
 def resolve_rarity(rarity_raw, existing_doc=None):
     if not rarity_raw: return None
@@ -149,6 +155,7 @@ def resolve_rarity(rarity_raw, existing_doc=None):
                 "value": existing_doc.get("currency_value", CNFT_DEFAULT_VALUE), "is_cnft": True}
     return None
 
+
 def classify_rarity(s):
     if not s: return "OTHER"
     if is_cnft_rarity(s): return extract_cnft_tier(s) or "CNFT"
@@ -162,9 +169,11 @@ def classify_rarity(s):
 _EMOJI_RANGES = ((0x2190,0x21FF),(0x2300,0x23FF),(0x25A0,0x27BF),(0x2900,0x29FF),(0x2B00,0x2BFF),(0x1F000,0x1FFFF))
 _VARSEL = ("\uFE0F", "\uFE0E")
 
+
 def _is_emoji_char(ch):
     cp = ord(ch)
     return any(lo <= cp <= hi for lo, hi in _EMOJI_RANGES)
+
 
 def _event_wrapper_emoji(line):
     if not line or not _is_emoji_char(line[0]) or not _is_emoji_char(line[-1]): return None
@@ -181,6 +190,7 @@ def _event_wrapper_emoji(line):
     ln = "".join(c for c in lead if c not in _VARSEL)
     tn = "".join(c for c in trail if c not in _VARSEL)
     return ln if ln and ln == tn else None
+
 
 def parse_catchbot_check(text):
     if not text or not text.strip(): return None
@@ -213,6 +223,7 @@ def parse_catchbot_check(text):
 # ---------- Perceptual hash ----------
 PHASH_SIZE = 16
 
+
 def _compute_dhash_sync(b, hash_size=PHASH_SIZE):
     try:
         from PIL import Image
@@ -225,6 +236,7 @@ def _compute_dhash_sync(b, hash_size=PHASH_SIZE):
         return format(int("".join(bits), 2), f'0{hash_size*hash_size//4}x')
     except Exception:
         return None
+
 
 async def compute_phash_for_message(msg):
     try:
@@ -241,6 +253,7 @@ class DatabaseManager:
         self.uri = uri
         self.client = None
         self.db = None
+
     async def connect(self):
         for attempt in range(1, Config.MAX_RETRIES + 1):
             try:
@@ -253,8 +266,10 @@ class DatabaseManager:
                 logger.warning(f"MongoDB attempt {attempt} failed: {e}")
                 if attempt == Config.MAX_RETRIES: raise
                 await asyncio.sleep(2 ** attempt)
+
     async def close(self):
         if self.client: self.client.close()
+
     @property
     def system_col(self): return self.db["system_col"]
     @property
@@ -272,7 +287,7 @@ class NinjaSync:
     def __init__(self, bot):
         self.bot = bot
         self.stats_lock = asyncio.Lock()
-        self.stats = {"checked":0, "imported":0, "updated":0, "misses":0, "errors":0}
+        self.stats = {"checked": 0, "imported": 0, "updated": 0, "misses": 0, "errors": 0}
         self.running = False
         self.cancel_requested = False
         self.current_task = None
@@ -310,7 +325,7 @@ class NinjaSync:
 
         self.running = True
         self.cancel_requested = False
-        self.stats = {"checked":0, "imported":0, "updated":0, "misses":0, "errors":0}
+        self.stats = {"checked": 0, "imported": 0, "updated": 0, "misses": 0, "errors": 0}
         self.start_id, self.end_id = start_id, end_id
         self.started_at = time.time()
         self.worker_progress = {}
@@ -343,8 +358,10 @@ class NinjaSync:
 
         self.current_task = asyncio.create_task(self._run())
 
+        # ---- preview using zip ----
+        preview_pairs = list(zip(self.bot.ninja_clients, self.bot.ninja_names))[:8]
         preview_lines = []
-        for idx, (c, n) in enumerate(self.bot.ninja_clients[:8]):
+        for idx, (_c, n) in enumerate(preview_pairs):
             if idx < len(self.ranges):
                 r = self.ranges[idx]
                 preview_lines.append(f"  {idx+1}. <code>{escape_html(n)}</code> → <code>{r[0]}..{r[-1]}</code> ({len(r)})")
@@ -394,7 +411,7 @@ class NinjaSync:
             except Exception as e:
                 logger.warning(f"progress_loop send: {e}")
 
-    # -------- WARM-UP (STRICT TIMEOUT) --------
+    # -------- WARM-UP --------
     async def _warmup(self, client, name):
         username = Config.SYNC_TARGET_BOT_USERNAME
         if not username.startswith("@"): username = "@" + username
@@ -485,7 +502,7 @@ class NinjaSync:
             r_info = resolve_rarity(info["rarity_raw"], existing)
             if not r_info:
                 logger.warning(f"⚠️ [{name}] id={info['id']} bad rarity '{info['rarity_raw']}' → COMMON")
-                r_info = {"tier":"COMMON", "name": f"{RARITY_EMOJI['COMMON']} {RARITY_DISPLAY_NAME['COMMON']}",
+                r_info = {"tier": "COMMON", "name": f"{RARITY_EMOJI['COMMON']} {RARITY_DISPLAY_NAME['COMMON']}",
                           "value": _RARITY_VALUE_MAP["COMMON"], "is_cnft": False}
 
             fwd = await asyncio.wait_for(
@@ -576,7 +593,8 @@ class NinjaSync:
         progress_task = asyncio.create_task(self._progress_loop(total))
         worker_tasks = []
         try:
-            for idx, (client, name) in enumerate(self.bot.ninja_clients):
+            # ⚠️ FIXED: zip(ninja_clients, ninja_names) — parallel lists, not tuples
+            for idx, (client, name) in enumerate(zip(self.bot.ninja_clients, self.bot.ninja_names)):
                 if idx >= len(self.ranges):
                     logger.info(f"   worker loop: idx({idx}) >= ranges({len(self.ranges)}), stop")
                     break
@@ -625,10 +643,10 @@ class SovereignBot:
         self.bot_client = TelegramClient("bot_main_session", Config.API_ID, Config.API_HASH,
                                           flood_sleep_threshold=60)
         self.bot_id = None
-        self.ninja_clients = []
-        self.ninja_names = []
-        self.ninja_ids = set()
-        self.ninja_warmed = {}  # tg_user_id -> True/False
+        self.ninja_clients = []       # list[TelegramClient]
+        self.ninja_names = []         # list[str] — parallel to ninja_clients
+        self.ninja_ids = set()        # set[int]
+        self.ninja_warmed = {}        # uid -> bool
         self.ninja_spam_tasks = {}
         self.delete_and_taunt_targets = {}
         self.phrase_lists = {}
@@ -733,8 +751,10 @@ class SovereignBot:
                         edit_messages=True, delete_messages=True, ban_users=True, invite_users=True,
                         pin_messages=True, add_admins=False, anonymous=False, manage_call=False)
                     promoted += 1
-                except FloodWaitError as e: await asyncio.sleep(e.seconds + 1); failed += 1
-                except Exception: failed += 1
+                except FloodWaitError as e:
+                    await asyncio.sleep(e.seconds + 1); failed += 1
+                except Exception:
+                    failed += 1
                 await asyncio.sleep(0.4)
             try:
                 await self.bot_client.send_message(Config.OWNER_ID,
@@ -850,7 +870,7 @@ class SovereignBot:
             sess = doc.get("session")
             if not sess: continue
             try:
-                # ⚠️ flood_sleep_threshold=0 → FloodWait raises immediately instead of blocking
+                # flood_sleep_threshold=0 → FloodWait raises immediately instead of blocking
                 c = TelegramClient(StringSession(sess), Config.API_ID, Config.API_HASH, flood_sleep_threshold=0)
                 await c.start()
                 if await c.is_user_authorized():
@@ -1072,8 +1092,10 @@ class SovereignBot:
                         post_messages=True, edit_messages=True, delete_messages=True, ban_users=True,
                         invite_users=True, pin_messages=True, add_admins=False, anonymous=False, manage_call=False)
                     promoted += 1
-                except FloodWaitError as e: await asyncio.sleep(e.seconds + 1); failed += 1
-                except Exception: failed += 1
+                except FloodWaitError as e:
+                    await asyncio.sleep(e.seconds + 1); failed += 1
+                except Exception:
+                    failed += 1
                 await asyncio.sleep(0.4)
             await status.edit(f"✅ `/adm` `{target_chat}` · promoted={promoted} already={already} failed={failed}")
 
@@ -1232,12 +1254,13 @@ class SovereignBot:
             if event.sender_id != Config.OWNER_ID: return await event.reply("⛔ Owner only.")
             await event.reply(await self.sync.cancel())
 
-        # ---- Diagnostic: state dump ----
+        # ---- /nsyncdebug ----
         @self.bot_client.on(events.NewMessage(pattern=r"^/nsyncdebug(?:@\w+)?$"))
         async def nsync_debug(event):
             if event.sender_id != Config.OWNER_ID: return await event.reply("⛔ Owner only.")
             total = len(self.ninja_clients); alive = 0; lines = []
-            for i, (c, n) in enumerate(self.ninja_clients[:15], 1):
+            ninja_pairs = list(zip(self.ninja_clients, self.ninja_names))[:15]
+            for i, (c, n) in enumerate(ninja_pairs, 1):
                 uid = getattr(c, "tg_user_id", "?")
                 try:
                     conn = c.is_connected(); alive += 1 if conn else 0
@@ -1258,7 +1281,7 @@ class SovereignBot:
                 (f"\n  …+{total - 15}" if total > 15 else ""),
                 parse_mode="html")
 
-        # ---- /nsyncwarmup: background diagnostic ----
+        # ---- /nsyncwarmup ----
         @self.bot_client.on(events.NewMessage(pattern=r"^/nsyncwarmup(?:@\w+)?$"))
         async def nsync_warmup(event):
             if event.sender_id != Config.OWNER_ID: return await event.reply("⛔ Owner only.")
@@ -1275,7 +1298,8 @@ class SovereignBot:
         targets = [username, Config.SYNC_TARGET_BOT_ID]
         ok = fail = 0
         lines = []
-        for i, (c, n) in enumerate(self.ninja_clients, 1):
+        ninja_pairs = list(zip(self.ninja_clients, self.ninja_names))
+        for i, (c, n) in enumerate(ninja_pairs, 1):
             uid = getattr(c, "tg_user_id", "?")
             success = False; err = ""
             for target in targets:
@@ -1293,10 +1317,10 @@ class SovereignBot:
             else:
                 fail += 1; self.ninja_warmed[uid] = False
                 lines.append(f"  {i}. ❌ <code>{uid}</code> — {escape_html(n)}\n      ↳ <code>{escape_html(err)}</code>")
-            if i % 5 == 0 or i == len(self.ninja_clients):
+            if i % 5 == 0 or i == len(ninja_pairs):
                 try:
                     await status_msg.edit(
-                        f"🔥 <b>Warm-up {i}/{len(self.ninja_clients)}</b>\n"
+                        f"🔥 <b>Warm-up {i}/{len(ninja_pairs)}</b>\n"
                         f"✅ <b>{ok}</b> · ❌ <b>{fail}</b>\n\n" + "\n".join(lines[-8:]),
                         parse_mode="html")
                 except Exception: pass
@@ -1335,7 +1359,8 @@ class SovereignBot:
         if not username.startswith("@"): username = "@" + username
         targets = [username, Config.SYNC_TARGET_BOT_ID]
         ok = 0
-        for c, n in self.ninja_clients:
+        ninja_pairs = list(zip(self.ninja_clients, self.ninja_names))
+        for c, n in ninja_pairs:
             uid = getattr(c, "tg_user_id", "?")
             for target in targets:
                 try:
@@ -1350,7 +1375,7 @@ class SovereignBot:
                     logger.warning(f"⏳ boot [{n}] FloodWait {e.seconds}s")
                 except Exception as e:
                     logger.warning(f"⚠️ boot [{n}] {type(e).__name__}: {str(e)[:60]}")
-        logger.info(f"🔥 Boot warm-up: {ok}/{len(self.ninja_clients)} OK")
+        logger.info(f"🔥 Boot warm-up: {ok}/{len(ninja_pairs)} OK")
 
     async def stop(self):
         if self.start_spam_active: await self.stop_start_spam()
