@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Sovereign Ninja + Ninja Sync + Auto-Catch (SELECTIVE)
-- /spam + /nsync (31 ninjas)
-- AUTO-CATCH (hardcore / SPAM_GROUPS):
-    * Spawn bot (6157455819) posts caption starting with 🟠/🟣/🔵 → accept
-    * Any ONE ninja (first non-flooded) replies /w          → delay 0.0
+"""Sovereign Ninja + Ninja Sync + Selective Auto-Catch
+- 31 ninjas work for /spam AND /nsync
+- AUTO-CATCH in the 4 hardcore SPAM_GROUPS only:
+    * Spawn bot (6157455819) posts "spawned" text + 🔵/🟣/🟠 → accept
+    * ONE ninja sends /w (fallback if flood)
     * Hint bot (8999491734) replies "/catch <name>"
-    * ONLY IDs selected via `/auto` (reply to ID list) send /catch
+    * ONLY /auto-selected IDs send /catch
 - Everything runs concurrently with /spam
+- /actest for diagnostics
 """
 
 import asyncio, io, logging, os, random, re, sys, threading, time, unicodedata
@@ -46,8 +47,8 @@ class Config:
     SPAWN_BOT_2_ID = 8999491734
     SPAWN_GROUP_2 = -1003580630981
     NINJA_PICK_COUNT = 5
-    NINJA_W_DELAY_MIN = 4
-    NINJA_W_DELAY_MAX = 5
+    NINJA_W_DELAY_MIN = 3.0
+    NINJA_W_DELAY_MAX = 4.0
     NINJA_IGNORED_EMOJIS = ["🔵", "🟣", "🟠"]
 
     START_SPAM_INTERVAL = 180
@@ -73,12 +74,12 @@ class Config:
     SYNC_PROGRESS_INTERVAL    = 30
     SYNC_AUTO_WARMUP_ON_BOOT  = True
 
-    # ═══ AUTO-CATCH (hardcore groups) ═══
+    # ═══ AUTO-CATCH (hardcore SPAM_GROUPS only) ═══
     AUTO_SPAWN_BOT_ID  = int(os.getenv("AUTO_SPAWN_BOT_ID", "6157455819"))
     AUTO_HINT_BOT_ID   = int(os.getenv("AUTO_HINT_BOT_ID",  "8999491734"))
-    AUTO_CATCH_EMOJI_PREFIXES = ["🟠", "🟣", "🔵"]     # ONLY these prefixes
-    AUTO_CATCH_STATE_TTL = 10                         # keep state alive (sec)
-    AUTO_CATCH_HINT_CACHE = 5
+    AUTO_CATCH_EMOJI_PREFIXES = ["🟠", "🟣", "🔵"]
+    AUTO_CATCH_STATE_TTL = 90
+    AUTO_CATCH_HINT_CACHE = 40
 
 
 SPAM_TEXT = """ @FLASH_SPAM_Bot | @fuckyourwifey_bot | @Imjustkidding_bot | @GodMorgan_robot | @enforcermorgan_11robot | fqcawqAaaaafbBsqqlqoျဘျဆငငေတငတုsahqBwqiqoaj#!11&$1(!92929*@*@>>
@@ -291,29 +292,28 @@ class DatabaseManager:
 
 
 # ══════════════════════════════════════════════════════════════════
-#  AUTO-CATCH (SELECTIVE)  —  hardcore SPAM_GROUPS
+#  AUTO-CATCH (hardcore SPAM_GROUPS only)
 # ══════════════════════════════════════════════════════════════════
 class AutoCatchEngine:
     """
-    Flow:
-      1. Spawn bot posts in a SPAM_GROUP with 🟠/🟣/🔵 prefix  → accepted.
-      2. A SINGLE ninja (random order, first non-flooded) replies /w.
-      3. Hint bot replies to /w (or spawn) with "/catch <name>".
-      4. ONLY the IDs in self.selected_ids (set via /auto) send /catch <name>.
-    Zero delays.
+    Flow (mirrors main.auto.py behaviour):
+      1. Spawn bot (6157455819) posts "spawned" text + 🔵/🟣/🟠 → accept
+      2. ONE ninja sends /w (sequential fallback if flooded)
+      3. Hint bot (8999491734) replies "/catch <name>"
+      4. ONLY /auto-selected IDs send /catch
     """
 
     def __init__(self, bot):
         self.bot = bot
-        self.selected_ids: Set[int] = set()   # who is allowed to /catch
+        self.selected_ids: Set[int] = set()
         self.spawn_state: Dict[Tuple[int, int], dict] = {}
         self.lock = asyncio.Lock()
-        # stats
         self.accepted = 0
         self.rejected = 0
         self.w_sent = 0
         self.catch_sent = 0
         self.w_failed = 0
+        self.raw_log: List[str] = []   # last 20 spawn-bot msgs seen in SPAM_GROUPS
 
     # ---------- persistence ----------
     async def load_settings(self):
@@ -359,9 +359,9 @@ class AutoCatchEngine:
                 or "a character has spawned" in tl
                 or "ᴀ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ" in text_clean)
 
-    def _starts_with_allowed_emoji(self, text_clean: str) -> bool:
-        s = text_clean.lstrip()
-        return any(s.startswith(e) for e in Config.AUTO_CATCH_EMOJI_PREFIXES)
+    def _has_allowed_emoji(self, text_clean: str) -> bool:
+        """Accept if 🔵/🟣/🟠 appears anywhere in the caption."""
+        return any(e in text_clean for e in Config.AUTO_CATCH_EMOJI_PREFIXES)
 
     def _purge_old_states(self):
         now = time.time()
@@ -369,33 +369,39 @@ class AutoCatchEngine:
             if now - self.spawn_state[k]["ts"] > Config.AUTO_CATCH_STATE_TTL:
                 del self.spawn_state[k]
 
-    # ---------- event handlers ----------
+    # ---------- spawn handler ----------
     async def spawn_handler(self, event):
         try:
             uid = getattr(event.client, "tg_user_id", None)
             if not uid: return
-            if event.chat_id not in Config.SPAM_GROUPS: return
 
             text = self._get_text(event)
-            if not text: return
             clean = self._clean_invisible(text)
-            if not self._is_spawn_text(clean): return
 
-            if not self._starts_with_allowed_emoji(clean):
+            # log every spawn-bot msg seen in SPAM_GROUPS
+            if event.chat_id in Config.SPAM_GROUPS:
+                head = clean[:60].replace("\n", " ⏎ ")
+                line = f"uid={uid} chat={event.chat_id} msg={event.message.id} text={head!r}"
+                self.raw_log.append(line)
+                if len(self.raw_log) > 20: self.raw_log.pop(0)
+                logger.info(f"📡 [spawn-bot] {line}")
+
+            if event.chat_id not in Config.SPAM_GROUPS: return
+            if not text: return
+            if not self._is_spawn_text(clean):
+                return
+            if not self._has_allowed_emoji(clean):
                 self.rejected += 1
-                logger.info(f"🚫 [auto-catch] rejected bad-prefix chat={event.chat_id}")
+                logger.info(f"   ↳ reject: no 🔵🟣🟠 in text")
                 return
 
-            chat_id = event.chat_id
-            msg_id  = event.message.id
-            skey = (chat_id, msg_id)
-
+            skey = (event.chat_id, event.message.id)
             async with self.lock:
                 if skey in self.spawn_state:
                     return
                 state = {
-                    "chat_id": chat_id,
-                    "spawn_msg_id": msg_id,
+                    "chat_id": event.chat_id,
+                    "spawn_msg_id": event.message.id,
                     "w_sent": False,
                     "w_reply_id": None,
                     "w_sender_uid": None,
@@ -408,18 +414,17 @@ class AutoCatchEngine:
                 self.accepted += 1
                 self._purge_old_states()
 
-            logger.info(f"🥷 [auto-catch] SPAWN accepted chat={chat_id} msg={msg_id}")
+            logger.info(f"✅ [auto-catch] ACCEPTED chat={event.chat_id} msg={event.message.id}")
             asyncio.create_task(self._w_worker(state))
         except Exception as e:
             logger.warning(f"auto-catch spawn_handler: {e}")
 
     async def _w_worker(self, state):
-        """Try ninjas one at a time until ONE succeeds in sending /w."""
-        chat_id = state["chat_id"]
-        msg_id  = state["spawn_msg_id"]
-
+        """Try ninjas one at a time until ONE succeeds."""
+        chat_id = state["chat_id"]; msg_id = state["spawn_msg_id"]
         candidates = list(self.bot.ninja_clients)
         random.shuffle(candidates)
+        logger.info(f"🥷 [auto-catch] /w worker start — {len(candidates)} candidates")
 
         for client in candidates:
             if state["w_sent"]: return
@@ -427,27 +432,27 @@ class AutoCatchEngine:
             if not uid: continue
             try:
                 sent = await asyncio.wait_for(
-                    client.send_message(chat_id, "/w", reply_to=msg_id),
-                    timeout=15)
+                    client.send_message(chat_id, "/w", reply_to=msg_id), timeout=15)
                 state["w_sent"] = True
                 state["w_reply_id"] = sent.id
                 state["w_sender_uid"] = uid
                 self.w_sent += 1
-                logger.info(f"🥷 [auto-catch {uid}] /w → chat={chat_id} reply_id={sent.id}")
+                logger.info(f"🥷 [auto-catch {uid}] /w ✅ → chat={chat_id} reply_id={sent.id}")
                 return
             except FloodWaitError as e:
-                logger.warning(f"⏳ [{uid}] /w FloodWait {e.seconds}s → next ninja")
+                logger.warning(f"⏳ [{uid}] /w FloodWait {e.seconds}s → next")
                 continue
             except asyncio.TimeoutError:
-                logger.warning(f"⏱️ [{uid}] /w timeout → next ninja")
+                logger.warning(f"⏱️ [{uid}] /w timeout → next")
                 continue
             except Exception as e:
-                logger.warning(f"⚠️ [{uid}] /w {type(e).__name__}: {str(e)[:80]}")
+                logger.warning(f"⚠️ [{uid}] /w {type(e).__name__}: {str(e)[:100]}")
                 continue
 
         self.w_failed += 1
-        logger.error(f"❌ [auto-catch] ALL ninjas failed /w for chat={chat_id} msg={msg_id}")
+        logger.error(f"❌ [auto-catch] ALL ninjas failed /w for chat={chat_id}")
 
+    # ---------- hint handler ----------
     async def hint_handler(self, event):
         try:
             uid = getattr(event.client, "tg_user_id", None)
@@ -458,15 +463,13 @@ class AutoCatchEngine:
             reply_to = event.reply_to_msg_id
             if not reply_to: return
 
-            # Match state by reply_to (w_reply_id preferred, spawn_msg_id fallback)
             state = None
             async with self.lock:
                 for st in self.spawn_state.values():
                     if st["chat_id"] != event.chat_id: continue
                     if st.get("w_reply_id") == reply_to or st.get("spawn_msg_id") == reply_to:
                         state = st; break
-            if not state:
-                return
+            if not state: return
 
             text = self._get_text(event)
             if not text: return
@@ -477,11 +480,9 @@ class AutoCatchEngine:
 
             mid = event.message.id
             async with self.lock:
-                if mid in state["hint_seen"]:
-                    return
+                if mid in state["hint_seen"]: return
                 state["hint_seen"].add(mid)
-                if state["catch_cmd"]:  # already broadcast once
-                    return
+                if state["catch_cmd"]: return
                 state["catch_cmd"] = catch_cmd
 
             logger.info(f"🎯 [auto-catch] HINT chat={event.chat_id} cmd={catch_cmd!r}")
@@ -491,9 +492,8 @@ class AutoCatchEngine:
 
     async def _broadcast_catch(self, state, catch_cmd):
         if not self.selected_ids:
-            logger.warning("⚠️ [auto-catch] no /auto IDs set — nobody sends /catch")
+            logger.warning("⚠️ [auto-catch] no /auto IDs — skip")
             return
-
         chat_id = state["chat_id"]
         uid_map = {}
         for c in self.bot.ninja_clients:
@@ -505,26 +505,26 @@ class AutoCatchEngine:
             if uid in state["catch_sent_by"]: continue
             client = uid_map.get(uid)
             if not client:
-                continue
+                logger.warning(f"   ↳ /auto ID {uid} not in pool"); continue
             state["catch_sent_by"].add(uid)
             tasks.append(self._send_catch(client, uid, chat_id, catch_cmd))
-
         if tasks:
+            logger.info(f"📢 Broadcasting /catch to {len(tasks)} selected ninjas")
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _send_catch(self, client, uid, chat_id, catch_cmd):
         try:
             await asyncio.wait_for(client.send_message(chat_id, catch_cmd), timeout=20)
             self.catch_sent += 1
-            logger.info(f"🥷 [auto-catch {uid}] /catch → {chat_id}  cmd={catch_cmd!r}")
+            logger.info(f"🥷 [{uid}] /catch ✅ → {chat_id}  cmd={catch_cmd!r}")
         except FloodWaitError as e:
             logger.warning(f"⏳ [{uid}] /catch FloodWait {e.seconds}s")
         except asyncio.TimeoutError:
             logger.warning(f"⏱️ [{uid}] /catch timeout")
         except Exception as e:
-            logger.warning(f"⚠️ [{uid}] /catch {type(e).__name__}: {str(e)[:80]}")
+            logger.warning(f"⚠️ [{uid}] /catch {type(e).__name__}: {str(e)[:100]}")
 
-    # ---------- register on every ninja ----------
+    # ---------- register ----------
     def register(self, client):
         client.add_event_handler(self.spawn_handler,
                                  events.NewMessage(from_users=Config.AUTO_SPAWN_BOT_ID))
@@ -537,7 +537,7 @@ class AutoCatchEngine:
 
 
 # ══════════════════════════════════════════════════════════════════
-#  NINJA SYNC — STATIC RANGE
+#  NINJA SYNC
 # ══════════════════════════════════════════════════════════════════
 class NinjaSync:
     def __init__(self, bot):
@@ -980,7 +980,7 @@ class SovereignBot:
         self.start_spam_tasks.clear(); self.start_spam_target = None
         return stopped
 
-    # ---------- OLD SPAWN_GROUP_2 (kept) ----------
+    # ---------- OLD SPAWN_GROUP_2 ----------
     async def _ninja_spawn_handler(self, event):
         try:
             uid = getattr(event.client, "tg_user_id", None)
@@ -1148,7 +1148,6 @@ class SovereignBot:
                     f"📋 **Auto-Catch IDs ({len(ids)}):**\n" + "\n".join(lines),
                     parse_mode="markdown")
 
-            # Read from replied message
             reply = await event.get_reply_message()
             if not reply or not reply.text:
                 return await event.reply(
@@ -1170,7 +1169,6 @@ class SovereignBot:
 
             if not ids: return await event.reply("❌ No valid IDs found in replied message.")
 
-            # dedupe preserve order
             seen = set(); uniq = []
             for i in ids:
                 if i not in seen:
@@ -1192,6 +1190,24 @@ class SovereignBot:
                 msg += "`" + "` `".join(str(m) for m in missing[:15]) + "`"
                 if len(missing) > 15: msg += f" …+{len(missing)-15}"
             await event.reply(msg, parse_mode="markdown")
+
+        # -------- /actest : diagnostic --------
+        @self.bot_client.on(events.NewMessage(pattern=r"^/actest(?:@\w+)?$"))
+        async def actest_cmd(event):
+            if event.sender_id != Config.OWNER_ID: return await event.reply("⛔ Owner only.")
+            ac = self.auto_catch
+            raw_lines = ac.raw_log[-10:] if ac.raw_log else ["(none — no spawn-bot msg seen in SPAM_GROUPS yet)"]
+            await event.reply(
+                f"🔍 **AUTO-CATCH DIAG**\n\n"
+                f"🎨 Allow: `{' '.join(Config.AUTO_CATCH_EMOJI_PREFIXES)}`\n"
+                f"🤖 Spawn bot: `{Config.AUTO_SPAWN_BOT_ID}`\n"
+                f"💡 Hint bot: `{Config.AUTO_HINT_BOT_ID}`\n"
+                f"📁 SPAM groups: `{len(Config.SPAM_GROUPS)}`\n"
+                f"🎯 Selected: `{len(ac.selected_ids)}`\n"
+                f"📊 Stats: `{ac.stats_line()}`\n\n"
+                f"**📡 Last {len(raw_lines)} spawn-bot msgs seen:**\n"
+                + "\n".join(f"`{l}`" for l in raw_lines),
+                parse_mode="markdown")
 
         # -------- ninja management --------
         @self.bot_client.on(events.NewMessage(pattern=r"^/addninja(?:@\w+)?(?:\s+(.*?))?(?:\s+(.*))?$"))
@@ -1269,7 +1285,7 @@ class SovereignBot:
                 f"🤖 Spawn bot: `{Config.AUTO_SPAWN_BOT_ID}`\n"
                 f"💡 Hint bot: `{Config.AUTO_HINT_BOT_ID}`\n"
                 f"📍 Groups: `{len(Config.SPAM_GROUPS)}` (hardcore)\n"
-                f"🎨 Allow prefixes: `{' '.join(Config.AUTO_CATCH_EMOJI_PREFIXES)}`\n"
+                f"🎨 Allow: `{' '.join(Config.AUTO_CATCH_EMOJI_PREFIXES)}`\n"
                 f"⏱️ Delay: `0.0s` (instant)\n"
                 f"🎯 Selected IDs: `{len(ac.selected_ids)}`\n"
                 f"📋 Preview: `{sel_preview}`\n\n"
@@ -1455,7 +1471,7 @@ class SovereignBot:
                     except Exception: name = "Target"
                     asyncio.create_task(self._taunt_user(cid, sid, event.id, name))
 
-        # ═══ NINJA SYNC commands ═══
+        # ═══ NINJA SYNC ═══
         @self.bot_client.on(events.NewMessage(pattern=r"^/nsync(?:@\w+)?(?:\s+(\d+))?(?:\s+(\d+))?$"))
         async def nsync_cmd(event):
             if event.sender_id != Config.OWNER_ID: return await event.reply("⛔ Owner only.")
@@ -1587,7 +1603,7 @@ class SovereignBot:
         await self.load_ninja_pools()
         await self.load_taunt_targets()
         await self.sync.load_settings()
-        await self.auto_catch.load_settings()          # ← NEW
+        await self.auto_catch.load_settings()
 
         if Config.SYNC_AUTO_WARMUP_ON_BOOT and self.ninja_clients:
             logger.info(f"🔥 Auto-warmup {len(self.ninja_clients)} ninjas in background...")
