@@ -62,10 +62,10 @@ class Config:
 
     # ── Auto-Catch ──────────────────────────────────────────────
     # (Catch ninja pool is DB-managed via /setcatch — NOT hardcoded)
-    NINJA_PICK_COUNT = 5          # per spawn → how many to pick
-    NINJA_W_DELAY_MIN = 3.0
-    NINJA_W_DELAY_MAX = 4.0
-    NINJA_WHITELIST_EMOJIS = ["🔵", "🟣", "🟠"]
+    NINJA_PICK_COUNT = 7        # per spawn → how many to pick
+    NINJA_W_DELAY_MIN = 0.0
+    NINJA_W_DELAY_MAX = 0.1
+    NINJA_WHITELIST_EMOJIS = ["🟣", "🟠", "🟡"]
     SPAWN_PHRASES = (
         "A CHARACTER HAS SPAWNED",
         "ᴀ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ",
@@ -78,12 +78,12 @@ class Config:
     # Target: 1 msg/group/20s → 21 msg/min (7 groups)
     # 38 ninjas → ~0.55 msg/ninja/min → 1 per ~110s per ninja
     # Telegram user flood threshold ≈ 1 msg/3s per chat (safe range)
-    SPAM_GROUP_INTERVAL = 20      # target sec between msgs per group
-    SPAM_GLOBAL_DELAY = 1.0       # min gap between any 2 sends
-    SPAM_NINJA_COOLDOWN = 30      # min sec between 2 msgs from same ninja
-    SPAM_CATCH_COOLDOWN = 90      # catch ninjas get longer cooldown
-    SPAM_FLOOD_DEFAULT = 120      # fallback cooldown for unknown flood
-    SPAM_PAUSE_AFTER_SPAWN = 12   # pause spam for X sec when spawn detected
+    SPAM_GROUP_INTERVAL = 1    # target sec between msgs per group
+    SPAM_GLOBAL_DELAY = 0.3     # min gap between any 2 sends
+    SPAM_NINJA_COOLDOWN = 3   # min sec between 2 msgs from same ninja
+    SPAM_CATCH_COOLDOWN = 2     # catch ninjas get longer cooldown
+    SPAM_FLOOD_DEFAULT = 20     # fallback cooldown for unknown flood
+    SPAM_PAUSE_AFTER_SPAWN = 4  # pause spam for X sec when spawn detected
 
     # ── Warmup ──────────────────────────────────────────────────
     HINT_BOT_WARMUP_INTERVAL = 3600   # periodic re-warmup (1h)
