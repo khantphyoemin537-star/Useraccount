@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Sovereign Ninja (clean · flood-safe · fast)
-- Ninjas work for /spam (100 msg/min/group target)
+"""Sovereign Ninja (clean · flood-safe · fast · diagnostics)
+- Ninjas work for /spam (~100 msg/min/group target)
 - Auto-catch on SPAM_GROUPS: catch_list only → Hint Bot DM
 - /setcatch (bulk add · append · persistent)
 - /warmup (all ninjas /start hint bot)
+- /diag /resetspam (state inspection + reset)
 - /startspam with staggered workers (1.2s apart)
 - Flood tracking per client + spawn-priority pause
 - Flask health check
@@ -44,10 +45,6 @@ class Config:
         -1003836488351,
         -1003733625547,
         -1004358425408,
-        # TODO: သင့်ရဲ့ group 3 ခု ထပ်ထည့်ပါ
-        # -100xxxxxxxxxx,
-        # -100xxxxxxxxxx,
-        # -100xxxxxxxxxx,
     ]
 
     TIMEZONE = pytz.timezone(os.getenv("TIMEZONE", "Asia/Yangon"))
@@ -60,6 +57,10 @@ class Config:
 
     # ── 🥷 Hint Bot (external · we only /start it) ─────────────
     SPAWN_HINT_BOT_ID = 8999491734
+    # ⚠️ ဒီမှာ Hint Bot ရဲ့ username ကို @ မပါဘဲ ထည့်ပါ
+    # ဥပမာ: "CatchHintBot" (bot profile ထဲက @username)
+    SPAWN_HINT_BOT_USERNAME = os.getenv(
+        "SPAWN_HINT_BOT_USERNAME", "@fuckyourwifey_bot")
 
     # ── Auto-Catch ──────────────────────────────────────────────
     NINJA_PICK_COUNT = 7
@@ -73,26 +74,27 @@ class Config:
     )
 
     # ── 🛡️ Flood-Safe Spam Timing ──────────────────────────────
-    # Target: ~100 msg/min per group
-    # 4 groups × 100 = 400 msg/min total
-    # 28 ninjas → ~14 msg/ninja/min → 1 per ~4s per ninja
-    SPAM_GROUP_INTERVAL   = 0.6     # 60/100 = 0.6s per group
-    SPAM_GLOBAL_DELAY     = 0.12    # min gap between any 2 sends
-    SPAM_NINJA_COOLDOWN   = 4       # same ninja cooldown (sec)
-    SPAM_CATCH_COOLDOWN   = 60      # catch ninja — spawn-safe
-    SPAM_FLOOD_DEFAULT    = 60      # fallback cooldown for unknown flood
-    SPAM_PAUSE_AFTER_SPAWN = 3      # pause spam X sec when spawn detected
-    SPAM_LOOP_TICK        = 0.1     # loop idle gap
+    # Target: ~60-100 msg/min per group (auto-balanced by pool size)
+    SPAM_GROUP_INTERVAL    = 1.0    # sec between msgs to same group
+    SPAM_GLOBAL_DELAY      = 0.15   # min gap between any 2 sends
+    SPAM_NINJA_COOLDOWN    = 4      # same ninja cooldown (sec)
+    SPAM_CATCH_COOLDOWN    = 60     # catch ninja — spawn-safe
+    SPAM_FLOOD_DEFAULT     = 60     # fallback cooldown
+    SPAM_FLOOD_MAX_CAP     = 300    # cap huge FloodWait (3600 → 300)
+    SPAM_PAUSE_AFTER_SPAWN = 3      # pause spam X sec on spawn
+    SPAM_LOOP_TICK         = 0.1    # loop idle gap
+    SPAM_ERROR_THRESHOLD   = 20     # consecutive errors → 60s pause
+    SPAM_ERR_PAUSE_SEC     = 60     # pause duration on error burst
 
     # ── Warmup ──────────────────────────────────────────────────
     HINT_BOT_WARMUP_INTERVAL = 3600   # periodic re-warmup (1h)
 
     # ── /startspam timing (FAST staggered) ──────────────────────
-    START_SPAM_MIN_DELAY = 1        # initial jitter min
-    START_SPAM_MAX_DELAY = 3        # initial jitter max
-    START_SPAM_STAGGER   = 1.2      # ninja တစ်ဦးစီ 1.2s ခွာ
-    START_SPAM_INTERVAL  = 300      # 5 min loop
-    START_SPAM_JITTER    = 0.20     # ±20%
+    START_SPAM_MIN_DELAY = 10
+    START_SPAM_MAX_DELAY = 20
+    START_SPAM_STAGGER   = 5
+    START_SPAM_INTERVAL  = 3600
+    START_SPAM_JITTER    = 0.20
 
 
 SPAM_TEXT = (
@@ -171,35 +173,38 @@ class SovereignBot:
             flood_sleep_threshold=60)
         self.bot_id = None
 
-        # ── Ninja pool (all) ────────────────────────────────────
+        # Ninja pool
         self.ninja_clients: List[TelegramClient] = []
         self.ninja_names: List[str] = []
         self.ninja_ids: Set[int] = set()
 
-        # ── Catch ninja IDs (bulk-managed · persistent) ─────────
+        # Catch list
         self.catch_ninja_ids: Set[int] = set()
 
-        # ── Spawn marker ────────────────────────────────────────
+        # Spawn marker
         self.ninja_spawn_marker = {"key": None, "selected": set()}
         self.ninja_forward_tracker: Dict[int, dict] = {}
 
-        # ── Flood / rate tracking ───────────────────────────────
+        # Flood / rate tracking
         self.flood_until: Dict = {}
         self.spam_last_used: Dict = {}
         self.spam_last_sent: Dict = {}
         self.spam_pause_until: float = 0.0
 
-        # ── Spam state ──────────────────────────────────────────
+        # Spam state
         self.ninja_spam_tasks: Dict = {}
         self.spam_active: bool = False
 
-        # ── /startspam state ────────────────────────────────────
+        # /startspam state
         self.start_spam_tasks: Dict = {}
         self.start_spam_target = None
         self.start_spam_active = False
 
-        # ── Warmup task ─────────────────────────────────────────
+        # Warmup task
         self._warmup_task: asyncio.Task = None
+
+        # Resolved hint bot entity cache
+        self._hint_target = None
 
         self._register_handlers()
 
@@ -228,9 +233,22 @@ class SovereignBot:
 
     def _mark_flood(self, client, seconds: int = None):
         sec = seconds if (seconds and seconds > 0) else Config.SPAM_FLOOD_DEFAULT
+        # cap huge flood values
+        if sec > Config.SPAM_FLOOD_MAX_CAP:
+            sec = Config.SPAM_FLOOD_MAX_CAP
         self.flood_until[client] = time.monotonic() + sec
         uid = getattr(client, "tg_user_id", "?")
         logger.warning(f"⛔ [{uid}] flood cooldown {sec}s")
+
+    def _hint_target_candidates(self):
+        """Return list of candidate targets for hint bot (in priority order)."""
+        cands = []
+        if (Config.SPAWN_HINT_BOT_USERNAME
+                and Config.SPAWN_HINT_BOT_USERNAME not in
+                ("YourHintBotUsername", "", "@")):
+            cands.append(Config.SPAWN_HINT_BOT_USERNAME.lstrip("@"))
+        cands.append(Config.SPAWN_HINT_BOT_ID)
+        return cands
 
     # ══════════════════════════════════════════════════════════════
     #  AUTO-PROMOTE
@@ -284,7 +302,7 @@ class SovereignBot:
                         anonymous=False, manage_call=False)
                     promoted += 1
                 except FloodWaitError as e:
-                    await asyncio.sleep(e.seconds + 1)
+                    await asyncio.sleep(min(e.seconds, 60))
                     failed += 1
                 except Exception:
                     failed += 1
@@ -300,40 +318,64 @@ class SovereignBot:
             logger.error(f"_auto_promote: {e}")
 
     # ══════════════════════════════════════════════════════════════
-    #  WARMUP (all ninjas → hint bot /start)
+    #  WARMUP (all ninjas → hint bot /start) · robust
     # ══════════════════════════════════════════════════════════════
     async def _warmup_hint_bot(self):
         if not self.ninja_clients:
             logger.info("🔄 Warmup skipped: no ninja clients.")
             return
+
         logger.info(
             f"🔄 Warming up {len(self.ninja_clients)} ninjas → "
-            f"Hint Bot {Config.SPAWN_HINT_BOT_ID}")
+            f"Hint Bot "
+            f"{Config.SPAWN_HINT_BOT_USERNAME or Config.SPAWN_HINT_BOT_ID}")
+
         ok = fail = 0
+        first_error = None
+        candidates = self._hint_target_candidates()
+
         for c in self.ninja_clients:
-            try:
-                uid = getattr(c, "tg_user_id", None)
-                await c.send_message(Config.SPAWN_HINT_BOT_ID, "/start")
+            uid = getattr(c, "tg_user_id", "?")
+            sent = False
+            last_err = None
+
+            for target in candidates:
+                try:
+                    await c.send_message(target, "/start")
+                    sent = True
+                    break
+                except FloodWaitError as e:
+                    last_err = f"FloodWait({e.seconds}s)"
+                    await asyncio.sleep(min(e.seconds, 30))
+                except Exception as e:
+                    last_err = f"{type(e).__name__}: {e}"
+
+            if sent:
                 ok += 1
                 logger.info(f"  ✅ [{uid}] /start → hint bot")
                 await asyncio.sleep(random.uniform(0.4, 0.9))
-            except FloodWaitError as e:
-                await asyncio.sleep(e.seconds + 1)
+            else:
                 fail += 1
-            except Exception as e:
-                logger.warning(f"  ❌ /start failed: {e}")
-                fail += 1
+                err = last_err or "unknown"
+                logger.warning(f"  ❌ [{uid}] /start failed: {err}")
+                if first_error is None:
+                    first_error = err
+
         logger.info(f"✅ Warmup done · ok={ok} fail={fail}")
+
         try:
-            await self.bot_client.send_message(
-                Config.OWNER_ID,
+            msg = (
                 f"🚀 **Hint Bot Warm-up**\n"
-                f"🥷 Hint Bot: `{Config.SPAWN_HINT_BOT_ID}`\n"
+                f"🥷 Target: `{Config.SPAWN_HINT_BOT_USERNAME or Config.SPAWN_HINT_BOT_ID}`\n"
                 f"✅ OK: `{ok}`\n"
                 f"❌ Fail: `{fail}`\n"
                 f"🥷 Pool: `{len(self.ninja_clients)}`\n"
-                f"🕐 {datetime.now(Config.TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')}",
-                parse_mode="markdown")
+                f"🕐 {datetime.now(Config.TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            if first_error:
+                msg += f"\n\n⚠️ **First error:**\n`{first_error}`"
+            await self.bot_client.send_message(
+                Config.OWNER_ID, msg, parse_mode="markdown")
         except Exception:
             pass
 
@@ -351,11 +393,10 @@ class SovereignBot:
                 await asyncio.sleep(60)
 
     # ══════════════════════════════════════════════════════════════
-    #  /startspam (ninja အားလုံး → /start @target · staggered)
+    #  /startspam (staggered workers)
     # ══════════════════════════════════════════════════════════════
     async def _start_spam_worker(self, ninja, uid, target,
                                  initial_delay=None):
-        # initial stagger
         if initial_delay is None:
             initial_delay = random.uniform(
                 Config.START_SPAM_MIN_DELAY,
@@ -368,12 +409,13 @@ class SovereignBot:
                     ninja.send_message(target, "/start"), timeout=20)
                 logger.info(f"🎯 [{uid}] /start → @{target}")
             except FloodWaitError as e:
-                await asyncio.sleep(e.seconds + 1)
+                await asyncio.sleep(min(e.seconds, 300) + 1)
                 continue
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.warning(f"🎯 [{uid}]: {e}")
+                logger.warning(
+                    f"🎯 [{uid}]: {type(e).__name__}: {e}")
 
             jitter = Config.START_SPAM_INTERVAL * random.uniform(
                 -Config.START_SPAM_JITTER, Config.START_SPAM_JITTER)
@@ -397,14 +439,11 @@ class SovereignBot:
                     me = await c.get_me()
                     uid = me.id
                     c.tg_user_id = uid
-
-                # stagger: #1 → 0s, #2 → 1.2s, #3 → 2.4s …
                 stagger = i * Config.START_SPAM_STAGGER
                 jitter = random.uniform(
                     Config.START_SPAM_MIN_DELAY,
                     Config.START_SPAM_MAX_DELAY)
                 initial = stagger + jitter
-
                 self.start_spam_tasks[uid] = asyncio.create_task(
                     self._start_spam_worker(c, uid, target, initial))
                 started += 1
@@ -431,7 +470,7 @@ class SovereignBot:
         return stopped
 
     # ══════════════════════════════════════════════════════════════
-    #  AUTO-CATCH — spawn handler (catch_ninja_ids only)
+    #  AUTO-CATCH
     # ══════════════════════════════════════════════════════════════
     async def _ninja_spawn_handler(self, event):
         try:
@@ -493,7 +532,8 @@ class SovereignBot:
                 self._mark_flood(event.client, e.seconds)
                 return
             except Exception as e:
-                logger.warning(f"[{uid}] forward failed: {e}")
+                logger.warning(
+                    f"[{uid}] forward failed: {type(e).__name__}: {e}")
                 return
 
             self.ninja_forward_tracker[uid] = {
@@ -542,7 +582,9 @@ class SovereignBot:
             except FloodWaitError as e:
                 self._mark_flood(event.client, e.seconds)
             except Exception as e:
-                logger.warning(f"send catch [{uid}] failed: {e}")
+                logger.warning(
+                    f"send catch [{uid}] failed: "
+                    f"{type(e).__name__}: {e}")
         except Exception as e:
             logger.warning(f"dm handler: {e}")
 
@@ -609,10 +651,23 @@ class SovereignBot:
                     logger.info(
                         f"✅ Ninja '{doc.get('name')}' loaded: "
                         f"@{me.username}")
+
+                    # 🔍 Pre-check group resolution
+                    bad_groups = []
+                    for cid in Config.SPAM_GROUPS:
+                        try:
+                            await c.get_entity(cid)
+                        except Exception:
+                            bad_groups.append(cid)
+                    if bad_groups:
+                        logger.warning(
+                            f"  ⚠️ [{me.id}] cannot resolve "
+                            f"{len(bad_groups)} group(s): {bad_groups}")
                 else:
                     await c.disconnect()
             except Exception as e:
-                logger.error(f"❌ Ninja load failed: {e}")
+                logger.error(
+                    f"❌ Ninja load failed: {type(e).__name__}: {e}")
         logger.info(
             f"🚀 Ninja Pool ready: {len(self.ninja_clients)} clients.")
 
@@ -624,10 +679,9 @@ class SovereignBot:
                     f"{sorted(missing)[:5]}…")
 
     # ══════════════════════════════════════════════════════════════
-    #  🛡️ FLOOD-SAFE SPAM (100 msg/min/group target)
+    #  🛡️ FLOOD-SAFE SPAM
     # ══════════════════════════════════════════════════════════════
     def _pick_spam_client(self, now: float):
-        """Eligible ninja ရွေး — catch ninja တွေကို နောက်ဆုံးမှ သုံး"""
         eligible = []
         for c in self.ninja_clients:
             if self.flood_until.get(c, 0) > now:
@@ -659,7 +713,6 @@ class SovereignBot:
         if not self.ninja_clients:
             return
 
-        # init
         for cid in chat_ids:
             self.spam_last_sent.setdefault(cid, 0)
         for c in self.ninja_clients:
@@ -669,12 +722,14 @@ class SovereignBot:
         async def loop():
             logger.info(
                 f"📢 Spam loop started · {len(chat_ids)} groups · "
-                f"target={int(60 / Config.SPAM_GROUP_INTERVAL)} msg/min/group · "
+                f"interval={Config.SPAM_GROUP_INTERVAL}s/group · "
                 f"pool={len(self.ninja_clients)}")
+            consec_err = 0
+            sent_total = 0
+
             while self.ninja_spam_tasks.get(key):
                 now = time.monotonic()
 
-                # spawn priority pause
                 if now < self.spam_pause_until:
                     await asyncio.sleep(0.3)
                     continue
@@ -684,23 +739,49 @@ class SovereignBot:
                     if (now - self.spam_last_sent.get(cid, 0)
                             < Config.SPAM_GROUP_INTERVAL):
                         continue
+
                     client = self._pick_spam_client(now)
                     if not client:
                         continue
+
+                    uid = getattr(client, "tg_user_id", "?")
                     try:
                         await client.send_message(cid, SPAM_TEXT)
                         ts = time.monotonic()
                         self.spam_last_sent[cid] = ts
                         self.spam_last_used[client] = ts
+                        consec_err = 0
+                        sent_total += 1
+                        if sent_total % 20 == 0:
+                            logger.info(
+                                f"📊 spam sent_total={sent_total}")
                     except FloodWaitError as e:
                         self._mark_flood(client, e.seconds)
+                        consec_err = 0
                     except Exception as e:
-                        logger.debug(f"spam send: {e}")
+                        consec_err += 1
+                        logger.warning(
+                            f"⚠️ spam [{uid}]→{cid} failed: "
+                            f"{type(e).__name__}: {e}")
+                        # short cooldown for this client
+                        self.flood_until[client] = (
+                            time.monotonic() + 10)
+                        if consec_err >= Config.SPAM_ERROR_THRESHOLD:
+                            logger.error(
+                                f"🚨 {consec_err} consecutive errors — "
+                                f"pausing {Config.SPAM_ERR_PAUSE_SEC}s")
+                            self.spam_pause_until = (
+                                time.monotonic()
+                                + Config.SPAM_ERR_PAUSE_SEC)
+                            consec_err = 0
+                            break
+
                     await asyncio.sleep(Config.SPAM_GLOBAL_DELAY)
 
-                # ⬅️ fast tick (was 1.0s)
                 await asyncio.sleep(Config.SPAM_LOOP_TICK)
-            logger.info(f"🛑 Spam loop stopped for {len(chat_ids)} groups")
+            logger.info(
+                f"🛑 Spam loop stopped for {len(chat_ids)} groups · "
+                f"sent_total={sent_total}")
 
         asyncio.create_task(loop())
 
@@ -749,13 +830,30 @@ class SovereignBot:
                 await event.reply(
                     f"✅ '{name}' (ID: {me.id}) added. "
                     f"Total: {len(self.ninja_clients)}")
-                try:
-                    await c.send_message(
-                        Config.SPAWN_HINT_BOT_ID, "/start")
-                except Exception:
-                    pass
+
+                # warmup for new ninja
+                sent = False
+                last_err = None
+                for target in self._hint_target_candidates():
+                    try:
+                        await c.send_message(target, "/start")
+                        sent = True
+                        break
+                    except Exception as e:
+                        last_err = f"{type(e).__name__}: {e}"
+                if sent:
+                    logger.info(f"✅ New ninja {me.id} → /start hint bot")
+                else:
+                    logger.warning(
+                        f"⚠️ New ninja {me.id} /start failed: {last_err}")
+                    await event.reply(
+                        f"⚠️ Ninja added but /start failed:\n"
+                        f"`{last_err}`\n"
+                        f"_(`/warmup` နဲ့ ပြန် try လုပ်ပါ)_",
+                        parse_mode="markdown")
             except Exception as e:
-                await event.reply(f"❌ Failed: {e}")
+                await event.reply(
+                    f"❌ Failed: {type(e).__name__}: {e}")
                 await self.db.ninja_col.delete_one({"session": sess})
 
         # ── /listninja ────────────────────────────────────────
@@ -998,7 +1096,8 @@ class SovereignBot:
             await event.reply(
                 f"🥷 **AUTO-CATCH (SPAM_GROUPS)**\n"
                 f"🎮 Game Bot: `{Config.SPAWN_GAME_BOT_ID}`\n"
-                f"🥷 Hint Bot: `{Config.SPAWN_HINT_BOT_ID}` (external)\n"
+                f"🥷 Hint Bot: `{Config.SPAWN_HINT_BOT_ID}` "
+                f"(`{Config.SPAWN_HINT_BOT_USERNAME}`)\n"
                 f"📍 Groups: `{len(Config.SPAM_GROUPS)}`\n"
                 f"👥 Pool: `{len(self.ninja_clients)}`\n"
                 f"🎯 Catch list: `{len(self.catch_ninja_ids)}` "
@@ -1008,8 +1107,7 @@ class SovereignBot:
                 f"{Config.NINJA_W_DELAY_MAX}s`\n"
                 f"✅ Whitelist: "
                 f"`{' '.join(Config.NINJA_WHITELIST_EMOJIS)}`\n"
-                f"🛡️ Spam: `{Config.SPAM_GROUP_INTERVAL}s/group` · "
-                f"~`{int(60 / Config.SPAM_GROUP_INTERVAL)}` msg/min/group",
+                f"🛡️ Spam: `{Config.SPAM_GROUP_INTERVAL}s/group`",
                 parse_mode="markdown")
 
         # ── /warmup (manual) ──────────────────────────────────
@@ -1020,7 +1118,7 @@ class SovereignBot:
                 return await event.reply("⛔ Owner only.")
             await event.reply(
                 f"🔄 Warming up `{len(self.ninja_clients)}` ninjas → "
-                f"Hint Bot `{Config.SPAWN_HINT_BOT_ID}`…",
+                f"Hint Bot `{Config.SPAWN_HINT_BOT_USERNAME or Config.SPAWN_HINT_BOT_ID}`…",
                 parse_mode="markdown")
             await self._warmup_hint_bot()
 
@@ -1081,11 +1179,66 @@ class SovereignBot:
                 f"🗣️ /spam loops: "
                 f"`{len([k for k,v in self.ninja_spam_tasks.items() if v])}`\n"
                 f"⛔ Flooded now: `{active_floods}/{len(self.ninja_clients)}`\n"
-                f"🛡️ Group interval: `{Config.SPAM_GROUP_INTERVAL}s` "
-                f"(~`{int(60 / Config.SPAM_GROUP_INTERVAL)}` msg/min/group)\n"
+                f"🛡️ Group interval: `{Config.SPAM_GROUP_INTERVAL}s`\n"
                 f"🎯 Catch list: `{len(self.catch_ninja_ids)}`"
             )
             await event.reply(msg, parse_mode="markdown")
+
+        # ── /diag — full state ────────────────────────────────
+        @self.bot_client.on(events.NewMessage(
+            pattern=r"^/diag(?:@\w+)?$"))
+        async def diag_cmd(event):
+            if event.sender_id != Config.OWNER_ID:
+                return
+            now = time.monotonic()
+            lines = ["🔍 **Diagnostics**"]
+
+            lines.append("\n**Ninjas (flood / last-used):**")
+            for c in self.ninja_clients[:15]:
+                uid = getattr(c, "tg_user_id", "?")
+                flood = self.flood_until.get(c, 0)
+                last = self.spam_last_used.get(c, 0)
+                fl = max(0, flood - now) if flood else 0
+                la = (now - last) if last else -1
+                tag = "🎯" if uid in self.catch_ninja_ids else "  "
+                lines.append(
+                    f"  {tag} `{uid}` · flood=`{fl:.0f}s` · "
+                    f"last=`{la:.0f}s`")
+            if len(self.ninja_clients) > 15:
+                lines.append(
+                    f"  … +{len(self.ninja_clients) - 15} more")
+
+            lines.append("\n**Groups (last sent):**")
+            for cid in Config.SPAM_GROUPS:
+                last = self.spam_last_sent.get(cid, 0)
+                la = (now - last) if last else -1
+                lines.append(f"  `{cid}` · last=`{la:.1f}s`")
+
+            lines.append("\n**State:**")
+            lines.append(
+                f"  pause: `{max(0, self.spam_pause_until - now):.0f}s`")
+            lines.append(
+                f"  loops: `{len([k for k,v in self.ninja_spam_tasks.items() if v])}`")
+            lines.append(
+                f"  catch_ids: `{len(self.catch_ninja_ids)}`")
+
+            await event.reply("\n".join(lines), parse_mode="markdown")
+
+        # ── /resetspam — clear flood/cooldown state ───────────
+        @self.bot_client.on(events.NewMessage(
+            pattern=r"^/resetspam(?:@\w+)?$"))
+        async def resetspam_cmd(event):
+            if event.sender_id != Config.OWNER_ID:
+                return await event.reply("⛔ Owner only.")
+            n_flood = len(self.flood_until)
+            self.flood_until.clear()
+            self.spam_last_used.clear()
+            self.spam_last_sent.clear()
+            self.spam_pause_until = 0
+            await event.reply(
+                f"✅ Reset done · cleared `{n_flood}` flood states\n"
+                f"💡 `/spam` ကို ပြန် ရိုက်ပါ",
+                parse_mode="markdown")
 
         # ── /spam ─────────────────────────────────────────────
         @self.bot_client.on(events.NewMessage(
@@ -1096,8 +1249,8 @@ class SovereignBot:
             await self._start_spam_loop(Config.SPAM_GROUPS)
             await event.reply(
                 f"🗣️ Spam started on {len(Config.SPAM_GROUPS)} groups · "
-                f"target `{int(60 / Config.SPAM_GROUP_INTERVAL)}` "
-                f"msg/min/group",
+                f"`{Config.SPAM_GROUP_INTERVAL}s/group` · "
+                f"pool=`{len(self.ninja_clients)}`",
                 parse_mode="markdown")
 
         # ── ရပ် / /stop ────────────────────────────────────────
@@ -1160,7 +1313,7 @@ class SovereignBot:
                     except Exception:
                         pass
                 except Exception as e:
-                    logger.error(f"Join: {e}")
+                    logger.error(f"Join: {type(e).__name__}: {e}")
                 await asyncio.sleep(0.3)
             try:
                 chat = await clients[0].get_entity(link)
@@ -1193,12 +1346,12 @@ class SovereignBot:
                 f"(loaded: `{len(self.catch_ninja_ids & self.ninja_ids)}`)\n"
                 f"⛔ Flooded: `{active_floods}`\n"
                 f"🎮 Game Bot: `{Config.SPAWN_GAME_BOT_ID}`\n"
-                f"🥷 Hint Bot: `{Config.SPAWN_HINT_BOT_ID}` (external)\n"
+                f"🥷 Hint Bot: `{Config.SPAWN_HINT_BOT_ID}` "
+                f"(`{Config.SPAWN_HINT_BOT_USERNAME}`)\n"
                 f"🔄 Warmup loop: `{warmup_status}`\n"
                 f"🎯 /startspam: `{ss}`\n"
                 f"🗣️ /spam groups: `{len(Config.SPAM_GROUPS)}`\n"
-                f"🛡️ Spam rate: ~`{int(60 / Config.SPAM_GROUP_INTERVAL)}` "
-                f"msg/min/group",
+                f"🛡️ Spam interval: `{Config.SPAM_GROUP_INTERVAL}s/group`",
                 parse_mode="markdown")
 
     # ══════════════════════════════════════════════════════════════
