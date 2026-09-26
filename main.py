@@ -35,7 +35,7 @@ class Config:
     API_ID = int(os.getenv("API_ID", "35766004"))
     API_HASH = os.getenv("API_HASH", "d15b4226b81724722279bae6af69e22d")
     BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN",
-                          "8824002850:AAGPtl7M0dw_gDVEZNxM3xxrYQazKvO5FKo")
+                          "8824002850:AAELMmlNd_rxs-kJfX69usTrA86cr-z-Va4")
 
     SPAM_GROUPS = [
         -1004381473883,
