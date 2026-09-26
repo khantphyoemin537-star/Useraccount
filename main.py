@@ -4,19 +4,13 @@
 Sovereign Ninja System — Auto-Catch + /spam + /startspam + Taunt + /go + /adm
 Ninja pool loaded from `ninja_col`.
 
-🎯 AUTO-CATCH FLOW:
-- New Spawn Bot (6157455819) posts spawns in SPAM_GROUPS
-- Only 2 random ninjas reply /w (to prevent flood)
-- Old Spawn Bot / Hint Bot (8999491734) sends /catch name in the group
-- Only ninjas in auto_catch_ids (bulk-added via /addauto) forward /catch name
-- Emoji filter still applies
-
-🛡️ FLOOD-SAFE SPAM:
-- Per-Ninja cooldown, per-chat cooldown, jitter, diversity
-
-🧼 INVISIBLE-SAFE:
-- clean_invisible() strips ZWJ/ZWNJ/BOM/Word-Joiner/Soft-Hyphen
-- looks_like_spawn() has 6 fallbacks
+🆕 CHANGES:
+- Error reports → Bot DM (with rate limit)
+- /adm gives admin with NO permissions
+- Entity cache warming
+- Test send on /spam
+- Watchdog restart on loop crash
+- Faster spam (2.5s / 4s)
 """
 
 import asyncio, io, logging, os, random, re, sys, threading, time, unicodedata
@@ -52,21 +46,20 @@ class Config:
     MAX_RETRIES = 3
 
     # 🎮 Spawn Bots
-    SPAWN_BOT_NEW_ID = 6157455819  # ← NEW spawn bot (posts spawns)
-    SPAWN_BOT_OLD_ID = 8999491734  # ← OLD spawn bot = Hint Bot (gives /catch name)
+    SPAWN_BOT_NEW_ID = 6157455819
+    SPAWN_BOT_OLD_ID = 8999491734
 
-    # Spawn groups = spam groups
     SPAWN_GROUP_2 = SPAM_GROUPS
 
-    # 🎯 /w reply — only this many ninjas reply per spawn
+    # 🎯 /w reply
     W_REPLY_COUNT = 2
     W_REPLY_DELAY_MIN = 0.5
     W_REPLY_DELAY_MAX = 1.5
 
-    # Emoji filter (skip spawn if any of these appear)
+    # Emoji filter
     NINJA_IGNORED_EMOJIS = ["🪞", "✨", "⚡", "⚜️", "💮", "❓"]
 
-    # Spawn phrases (invisible-safe matching)
+    # Spawn phrases
     SPAWN_PHRASES = (
         "A CHARACTER HAS SPAWNED",
         "ᴀ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ",
@@ -80,15 +73,15 @@ class Config:
     START_SPAM_JITTER = 0.10
 
     # ══════════════════════════════════════════════════════════
-    #  🛡️ FLOOD-SAFE SPAM TIMING
+    #  🛡️ FLOOD-SAFE SPAM TIMING (Faster)
     # ══════════════════════════════════════════════════════════
-    SPAM_GROUP_INTERVAL = 3.0
-    SPAM_NINJA_COOLDOWN = 5.0
+    SPAM_GROUP_INTERVAL = 2.5     # ← 3.0 → 2.5 (faster)
+    SPAM_NINJA_COOLDOWN = 4.0     # ← 5.0 → 4.0 (faster)
     SPAM_JITTER = 0.30
-    SPAM_GLOBAL_DELAY = 0.4
-    SPAM_PAUSE_AFTER_SPAWN = 4
+    SPAM_GLOBAL_DELAY = 0.3       # ← 0.4 → 0.3 (faster)
+    SPAM_PAUSE_AFTER_SPAWN = 3
 
-    # Spam text variety (random pick each send)
+    # Spam text variety
     SPAM_TEXTS = [
         " @FLASH_SPAM_Bot | @fuckyourwifey_bot | @Imjustkidding_bot | @GodMorgan_robot | @enforcermorgan_11robot | fqcawqAaaaafbBsqqlqoျဘျဆငငေတငတုsahqBwqiqoaj#!11&$1(!92929*@*@>>",
         " @GodMorgan_robot | @Imjustkidding_bot | qwertyuiopASDFGHJKLzxcvbnm1234567890!@#$%",
@@ -118,12 +111,9 @@ def run_flask():
 
 
 # ══════════════════════════════════════════════════════════════════
-#  🧼 INVISIBLE CHARACTER CLEANER (from auto-special main.py)
+#  🧼 INVISIBLE CHARACTER CLEANER
 # ══════════════════════════════════════════════════════════════════
 def clean_invisible(text: str) -> str:
-    """Remove all Unicode 'Format' (Cf) chars:
-    ZWJ (U+200D), ZWNJ (U+200C), BOM (U+FEFF), word joiner (U+2060),
-    soft hyphen (U+00AD), variation selectors, etc."""
     if not text:
         return ""
     try:
@@ -133,24 +123,17 @@ def clean_invisible(text: str) -> str:
 
 
 def strip_for_match(text: str) -> str:
-    """Clean invisible chars + uppercase for matching."""
     return clean_invisible(text).upper()
 
 
 def looks_like_spawn(text: str) -> bool:
-    """Robust spawn detection with 6 fallbacks (invisible-char safe)."""
     if not text:
         return False
-
     cleaned = clean_invisible(text)
     upper = cleaned.upper()
-
-    # 1) Exact phrase (standard)
     for ph in Config.SPAWN_PHRASES:
         if ph.upper() in upper:
             return True
-
-    # 2) Substring fallbacks (any match wins)
     for sub in (
         "CHARACTER HAS SPAWNED",
         "ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ",
@@ -159,7 +142,6 @@ def looks_like_spawn(text: str) -> bool:
     ):
         if sub.upper() in upper:
             return True
-
     return False
 
 
@@ -173,6 +155,37 @@ def looks_like_catch_success(text: str) -> bool:
         or "ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ" in cleaned
         or "NEW CHARACTER" in upper
     )
+
+
+# ══════════════════════════════════════════════════════════════════
+#  🆕 ERROR REPORTER (DM to Owner)
+# ══════════════════════════════════════════════════════════════════
+_error_dedup: Dict[str, float] = {}
+_ERROR_DEDUP_SEC = 30  # Same error 30s အတွင်း တစ်ခါပဲ ပို့
+
+
+async def report_error(bot_client, context: str, exc: Exception, extra: str = ""):
+    """Send error report to owner DM (with 30s dedup)."""
+    try:
+        key = f"{context}:{type(exc).__name__}"
+        now = time.time()
+        if now - _error_dedup.get(key, 0) < _ERROR_DEDUP_SEC:
+            return
+        _error_dedup[key] = now
+
+        msg = (
+            f"🚨 **ERROR REPORT**\n"
+            f"📍 **Where:** `{context}`\n"
+            f"❌ **Type:** `{type(exc).__name__}`\n"
+            f"💬 **Msg:** `{str(exc)[:300]}`\n"
+        )
+        if extra:
+            msg += f"ℹ️ **Info:** `{extra[:300]}`\n"
+
+        await bot_client.send_message(Config.OWNER_ID, msg)
+    except Exception as e:
+        # If DM fails, log to console
+        print(f"⚠️ Failed to send error DM: {e}")
 
 
 # ---------- Database ----------
@@ -229,7 +242,7 @@ class SovereignBot:
         self.ninja_names: List[str] = []
         self.ninja_ids: Set[int] = set()
 
-        # 🎯 Auto-catch list (bulk-added via /addauto)
+        # Auto-catch list
         self.auto_catch_ids: Set[int] = set()
 
         # Spam state
@@ -264,6 +277,9 @@ class SovereignBot:
         self.spam_pause_until: float = 0.0
 
         self._register_handlers()
+
+    async def _report(self, context: str, exc: Exception, extra: str = ""):
+        await report_error(self.bot_client, context, exc, extra)
 
     # ============================================================
     # AUTO-CATCH LIST (DB)
@@ -380,6 +396,7 @@ class SovereignBot:
             logger.warning(f"ninja_join: {e}")
 
     async def _auto_promote_ninjas(self, cid):
+        """🆕 Give admin with NO permissions."""
         try:
             perms = await self.bot_client.get_permissions(cid, "me")
             if not (perms and getattr(perms, "is_admin", False)):
@@ -398,10 +415,20 @@ class SovereignBot:
                     if np and getattr(np, "is_admin", False):
                         already += 1
                         continue
+                    # 🆕 ALL permissions = False
                     await self.bot_client.edit_admin(
-                        cid, uid, change_info=False, post_messages=True, edit_messages=True,
-                        delete_messages=True, ban_users=True, invite_users=True,
-                        pin_messages=True, add_admins=False, anonymous=False, manage_call=False,
+                        cid, uid,
+                        change_info=False,
+                        post_messages=False,
+                        edit_messages=False,
+                        delete_messages=False,
+                        ban_users=False,
+                        invite_users=False,
+                        pin_messages=False,
+                        add_admins=False,
+                        anonymous=False,
+                        manage_call=False,
+                        other=True,
                     )
                     promoted += 1
                 except FloodWaitError as e:
@@ -413,7 +440,7 @@ class SovereignBot:
             try:
                 await self.bot_client.send_message(
                     Config.OWNER_ID,
-                    f"✅ Auto-Promote `{cid}` · promoted={promoted} already={already} failed={failed}"
+                    f"✅ Auto-Promote `{cid}` · promoted={promoted} already={already} failed={failed} (no perms)"
                 )
             except Exception:
                 pass
@@ -485,7 +512,6 @@ class SovereignBot:
     # 🎯 AUTO-CATCH (NEW FLOW)
     # ============================================================
     async def _ninja_spawn_handler(self, event):
-        """Trigger: New Spawn Bot posts in SPAM_GROUPS → 2 random ninjas reply /w"""
         try:
             uid = getattr(event.client, "tg_user_id", None)
             if not uid:
@@ -505,7 +531,6 @@ class SovereignBot:
             if not text:
                 return
 
-            # 🧼 Invisible-safe spawn check
             if not looks_like_spawn(text):
                 cleaned = clean_invisible(text)
                 logger.info(
@@ -515,7 +540,6 @@ class SovereignBot:
                 )
                 return
 
-            # Emoji filter
             cleaned = clean_invisible(text)
             if any(e in cleaned for e in Config.NINJA_IGNORED_EMOJIS):
                 logger.info(f"⏭️ [spawn] emoji skip · chat={event.chat_id}")
@@ -523,7 +547,6 @@ class SovereignBot:
 
             skey = f"{event.chat_id}:{event.message.id}"
 
-            # First ninja hit → pick 2 random ninjas
             if self.w_reply_picker.get("key") != skey:
                 avail = list(self.ninja_ids)
                 if not avail:
@@ -538,7 +561,7 @@ class SovereignBot:
                 self.spam_pause_until = time.monotonic() + Config.SPAM_PAUSE_AFTER_SPAWN
                 logger.info(
                     f"🎯 Spawn {skey} · picked {len(picked)}/{len(avail)} for /w "
-                    f"· spam paused {Config.SPAM_PAUSE_AFTER_SPAWN}s"
+                    f"· spam paused"
                 )
 
             if uid not in self.w_reply_picker["selected"]:
@@ -557,10 +580,9 @@ class SovereignBot:
             except Exception as e:
                 logger.warning(f"🥷 [{uid}] /w failed: {e}")
         except Exception as e:
-            logger.warning(f"spawn handler: {e}")
+            await self._report("spawn_handler", e, f"uid={uid}")
 
     async def _ninja_hint_handler(self, event):
-        """Trigger: Old Spawn Bot sends /catch name → auto-catch ninjas forward it"""
         try:
             uid = getattr(event.client, "tg_user_id", None)
             if not uid:
@@ -569,8 +591,6 @@ class SovereignBot:
                 return
             if event.chat_id not in Config.SPAM_GROUPS:
                 return
-
-            # 🎯 ONLY auto-catch ninjas
             if uid not in self.auto_catch_ids:
                 return
 
@@ -584,10 +604,7 @@ class SovereignBot:
             if not text:
                 return
 
-            # 🧼 Invisible-safe
             cleaned = clean_invisible(text)
-
-            # Emoji filter on hint text (rare)
             if any(e in cleaned for e in Config.NINJA_IGNORED_EMOJIS):
                 return
 
@@ -610,12 +627,11 @@ class SovereignBot:
             except FloodWaitError as e:
                 await asyncio.sleep(min(e.seconds, 30))
             except Exception as e:
-                logger.warning(f"🎯 [{uid}] catch send failed: {e}")
+                await self._report("hint_handler", e, f"uid={uid}")
         except Exception as e:
-            logger.warning(f"hint handler: {e}")
+            await self._report("hint_handler.outer", e)
 
     def _register_ninja_handlers(self, client):
-        # Spawn: from NEW spawn bot
         client.add_event_handler(
             self._ninja_spawn_handler,
             events.NewMessage(
@@ -623,7 +639,6 @@ class SovereignBot:
                 from_users=Config.SPAWN_BOT_NEW_ID,
             ),
         )
-        # Hint: from OLD spawn bot
         client.add_event_handler(
             self._ninja_hint_handler,
             events.NewMessage(
@@ -701,6 +716,26 @@ class SovereignBot:
     # ============================================================
     # 🛡️ FLOOD-SAFE SPAM
     # ============================================================
+    async def _warm_entities(self, chat_ids):
+        """Pre-cache group entities for all ninjas."""
+        logger.info(f"🔥 Warming entity cache · {len(self.ninja_clients)} ninjas × {len(chat_ids)} groups...")
+        ok = fail = 0
+        for c in self.ninja_clients:
+            uid = getattr(c, "tg_user_id", "?")
+            for cid in chat_ids:
+                try:
+                    await c.get_input_entity(cid)
+                    ok += 1
+                except FloodWaitError as e:
+                    await asyncio.sleep(min(e.seconds, 20))
+                    fail += 1
+                except Exception as e:
+                    logger.warning(f"⚠️ warm [{uid}] {cid}: {type(e).__name__}: {e}")
+                    fail += 1
+                await asyncio.sleep(0.05)
+        logger.info(f"🔥 Entity cache done · ok={ok} fail={fail}")
+        return ok, fail
+
     def _pick_ninja(self, now: float) -> Optional[TelegramClient]:
         eligible = []
         for c in self.ninja_clients:
@@ -722,7 +757,22 @@ class SovereignBot:
         last = self.spam_chat_last.get(cid, 0)
         interval = Config.SPAM_GROUP_INTERVAL
         jitter = interval * random.uniform(-Config.SPAM_JITTER, Config.SPAM_JITTER)
-        return now - last >= max(2.0, interval + jitter)
+        return now - last >= max(1.5, interval + jitter)
+
+    async def _spam_watchdog(self, key, task):
+        """Restart spam loop if it dies unexpectedly."""
+        try:
+            await task
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.error(f"🚨 spam loop crashed: {e}")
+            await self._report("spam_watchdog", e, f"key={key}")
+        if self.ninja_spam_tasks.get(key):
+            logger.warning(f"🐕 watchdog restarting spam loop {key}")
+            self.ninja_spam_tasks[key] = False
+            await asyncio.sleep(2)
+            await self._start_spam_loop(list(key))
 
     async def _start_spam_loop(self, chat_ids):
         key = tuple(sorted(chat_ids))
@@ -740,6 +790,9 @@ class SovereignBot:
                 self.spam_ninja_last.setdefault(uid, 0)
                 self.spam_flood_until.setdefault(uid, 0)
 
+        # 🆕 Warm entity cache
+        await self._warm_entities(chat_ids)
+
         async def loop():
             logger.info(
                 f"📢 Spam loop started · {len(chat_ids)} groups · "
@@ -748,6 +801,7 @@ class SovereignBot:
                 f"pool={len(self.ninja_clients)}"
             )
             send_count = 0
+            err_count = 0
 
             while self.ninja_spam_tasks.get(key):
                 try:
@@ -763,7 +817,7 @@ class SovereignBot:
 
                         ninja = self._pick_ninja(now)
                         if not ninja:
-                            await asyncio.sleep(1.0)
+                            await asyncio.sleep(0.8)
                             break
 
                         uid = getattr(ninja, "tg_user_id", "?")
@@ -776,13 +830,21 @@ class SovereignBot:
                             self.spam_chat_last[cid] = ts
                             send_count += 1
                             if send_count % 20 == 0:
-                                logger.info(f"📊 sent={send_count} · last=[{uid} → {cid}]")
+                                logger.info(f"📊 sent={send_count} err={err_count} · last=[{uid} → {cid}]")
                         except FloodWaitError as e:
                             wait = min(e.seconds + 5, 600)
                             self.spam_flood_until[uid] = time.monotonic() + wait
                             logger.warning(f"⛔ [{uid}] flood {e.seconds}s → cooldown {wait}s")
+                            err_count += 1
                         except Exception as e:
-                            logger.debug(f"send err [{uid}]: {e}")
+                            err_count += 1
+                            logger.warning(f"❌ send err [{uid} → {cid}]: {type(e).__name__}: {e}")
+                            # 🆕 Send error to DM (dedup)
+                            await self._report(
+                                "spam_send",
+                                e,
+                                f"uid={uid} cid={cid}"
+                            )
 
                         await asyncio.sleep(Config.SPAM_GLOBAL_DELAY)
 
@@ -792,11 +854,13 @@ class SovereignBot:
                     break
                 except Exception as e:
                     logger.error(f"spam loop err: {e}")
+                    await self._report("spam_loop", e)
                     await asyncio.sleep(2)
 
-            logger.info(f"🛑 Spam stopped for {len(chat_ids)} groups · total sent={send_count}")
+            logger.info(f"🛑 Spam stopped for {len(chat_ids)} groups · total sent={send_count} err={err_count}")
 
-        asyncio.create_task(loop())
+        task = asyncio.create_task(loop())
+        asyncio.create_task(self._spam_watchdog(key, task))
 
     async def _taunt_user(self, cid, tid, msg_id, tname="Target"):
         admins = await self._get_admin_clients(cid)
@@ -913,7 +977,7 @@ class SovereignBot:
             else:
                 await event.reply("✅ Removed from DB.")
 
-        # ---------------- /addauto (bulk auto-catch IDs) ----------------
+        # ---------------- /addauto ----------------
         @self.bot_client.on(events.NewMessage(
             pattern=r"^/addauto(?:@\w+)?(?:\s+([\s\S]+))?$"
         ))
@@ -1072,7 +1136,7 @@ class SovereignBot:
             else:
                 await event.reply("🎯 OFF")
 
-        # ---------------- /adm ----------------
+        # ---------------- 🆕 /adm (No Permissions) ----------------
         @self.bot_client.on(events.NewMessage(pattern=r"^/adm(?:@\w+)?(?:\s+(.+))?$"))
         async def adm_cmd(event):
             if event.sender_id != Config.OWNER_ID:
@@ -1112,7 +1176,9 @@ class SovereignBot:
             if not (getattr(p, "add_admins", False) or getattr(p, "is_creator", False)):
                 return await event.reply("❌ No Add Admins perm.")
 
-            status = await event.reply(f"⏳ Promoting {len(self.ninja_clients)} ninjas in `{target_chat}`...")
+            status = await event.reply(
+                f"⏳ Promoting {len(self.ninja_clients)} ninjas in `{target_chat}` (no permissions)..."
+            )
             promoted = already = failed = 0
             for c in self.ninja_clients:
                 try:
@@ -1125,21 +1191,32 @@ class SovereignBot:
                     if np and getattr(np, "is_admin", False):
                         already += 1
                         continue
+                    # 🆕 ALL permissions = False
                     await self.bot_client.edit_admin(
-                        target_chat, uid, change_info=False, post_messages=True,
-                        edit_messages=True, delete_messages=True, ban_users=True,
-                        invite_users=True, pin_messages=True, add_admins=False,
-                        anonymous=False, manage_call=False,
+                        target_chat, uid,
+                        change_info=False,
+                        post_messages=False,
+                        edit_messages=False,
+                        delete_messages=False,
+                        ban_users=False,
+                        invite_users=False,
+                        pin_messages=False,
+                        add_admins=False,
+                        anonymous=False,
+                        manage_call=False,
+                        other=True,
                     )
                     promoted += 1
                 except FloodWaitError as e:
                     await asyncio.sleep(e.seconds + 1)
                     failed += 1
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"/adm promote {uid} failed: {e}")
                     failed += 1
                 await asyncio.sleep(0.4)
             await status.edit(
-                f"✅ `/adm` `{target_chat}` · promoted={promoted} already={already} failed={failed}"
+                f"✅ `/adm` `{target_chat}` · promoted={promoted} already={already} failed={failed}\n"
+                f"🔒 All ninjas are admin with **NO permissions**."
             )
 
         # ---------------- Taunt ----------------
@@ -1202,17 +1279,55 @@ class SovereignBot:
             await self._clear_taunt_targets(cid)
             await event.reply("🧹 Cleared.")
 
-        # ---------------- /spam ----------------
+        # ---------------- /spam (with test) ----------------
         @self.bot_client.on(events.NewMessage(pattern=r"^/spam(?:@\w+)?$"))
         async def spam_cmd(event):
             if event.sender_id != Config.OWNER_ID:
                 return
+
+            if not self.ninja_clients:
+                return await event.reply("❌ Ninja pool empty.")
+
+            status = await event.reply("⏳ Warming entity cache + testing first send...")
+
+            # Test send with first ninja
+            test_ok = 0
+            test_fail = 0
+            test_errors = []
+            test_ninja = self.ninja_clients[0]
+            test_uid = getattr(test_ninja, "tg_user_id", "?")
+            for cid in Config.SPAM_GROUPS[:2]:
+                try:
+                    await test_ninja.send_message(cid, "🧪 Test")
+                    test_ok += 1
+                except Exception as e:
+                    test_fail += 1
+                    test_errors.append(f"{cid}: {type(e).__name__}: {str(e)[:80]}")
+
+            msg = (
+                f"🧪 **Test Send**\n"
+                f"👤 Ninja: `{test_uid}`\n"
+                f"✅ OK: `{test_ok}`\n"
+                f"❌ Fail: `{test_fail}`\n"
+            )
+            if test_errors:
+                msg += "\n**Errors:**\n" + "\n".join(f"  • {e}" for e in test_errors[:3])
+
+            if test_fail > 0:
+                msg += "\n\n⚠️ Test Failed! Ninja က Group ထဲမှာ မရှိဘူး (or entity cache miss)."
+                await status.edit(msg, parse_mode="markdown")
+                return
+
+            await status.edit(msg + "\n✅ Test passed. Starting spam loop...")
+
             await self._start_spam_loop(Config.SPAM_GROUPS)
+
             await event.reply(
                 f"🗣️ Spam started on {len(Config.SPAM_GROUPS)} groups.\n"
                 f"⏱️ Chat interval: `{Config.SPAM_GROUP_INTERVAL}s`\n"
                 f"🛡️ Ninja cooldown: `{Config.SPAM_NINJA_COOLDOWN}s`\n"
-                f"📊 Rate: ~`{len(Config.SPAM_GROUPS) * 60 / Config.SPAM_GROUP_INTERVAL:.0f}` msg/min total",
+                f"📊 Rate: ~`{len(Config.SPAM_GROUPS) * 60 / Config.SPAM_GROUP_INTERVAL:.0f}` msg/min total\n\n"
+                f"💡 `/status` နဲ့ စစ်ပါ",
                 parse_mode="markdown",
             )
 
@@ -1328,7 +1443,6 @@ class SovereignBot:
         self.bot_id = me.id
         logger.info(f"🤖 Bot started: @{me.username} ({self.bot_id})")
 
-        # Load auto-catch IDs first
         await self._load_auto_catch_ids()
 
         await self.load_ninja_pools()
