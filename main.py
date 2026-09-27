@@ -3,10 +3,13 @@
 """
 Sovereign Ninja System — Auto-Catch + /spam + /startspam + Taunt + /go + /adm
 
-🆕 FINAL FIX for PeerIdInvalidError / Could not find input entity:
+🆕 FINAL FIX:
 - _populate_dialogs() : get_dialogs() ကိုသုံးပြီး entity cache ဖြည့်
 - _send_with_retry()   : dialogs ပြန်ဖြည့်ပြီး retry
 - /rewarm              : manual cache fix
+- Ninja×Chat blacklist : ChannelPrivateError / banned → skip
+- Spam loop rotation   : fail ဖြစ်ရင်လည်း LRU update → rotation လည်
+- /removeninja         : user ID နဲ့ပဲ ဖျက်
 """
 
 import asyncio, io, logging, os, random, re, sys, threading, time, unicodedata
@@ -19,7 +22,14 @@ from flask import Flask
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from pymongo.errors import ConnectionFailure, OperationFailure
 from telethon import TelegramClient, events, errors
-from telethon.errors import FloodWaitError, PeerIdInvalidError
+from telethon.errors import (
+    FloodWaitError,
+    PeerIdInvalidError,
+    ChannelPrivateError,
+    ChatWriteForbiddenError,
+    UserBannedInChannelError,
+    UserNotParticipantError,
+)
 from telethon.sessions import StringSession
 from telethon.tl.functions.messages import ImportChatInviteRequest
 
@@ -67,6 +77,10 @@ class Config:
     SPAM_JITTER = 0.1
     SPAM_GLOBAL_DELAY = 0.1
     SPAM_PAUSE_AFTER_SPAWN = 3
+
+    # 🆕 Blacklist TTLs
+    BLACKLIST_PRIVATE_SEC = 3600       # ChannelPrivate/banned → 1h
+    BLACKLIST_ENTITY_SEC  = 300        # entity not found → 5min
 
     SPAM_TEXTS = [
         " @FLASH_SPAM_Bot | @fuckyourwifey_bot | @Imjustkidding_bot | @GodMorgan_robot | @enforcermorgan_11robot | fqcawqAaaaafbBsqqlqoျဘျဆငငေတငတုsahqBwqiqoaj#!11&$1(!92929*@*@>>",
@@ -227,6 +241,9 @@ class SovereignBot:
         self.spam_ninja_last: Dict[int, float] = {}
         self.spam_chat_last: Dict[int, float] = {}
         self.spam_flood_until: Dict[int, float] = {}
+
+        # 🆕 (ninja_uid, chat_id) → blacklist until timestamp
+        self.ninja_chat_blacklist: Dict[Tuple[int, int], float] = {}
 
         # 🆕 Track dialogs-populated clients
         self.dialogs_populated: Set[int] = set()
@@ -677,10 +694,6 @@ class SovereignBot:
     # 🆕 ENTITY FIX — populate dialogs (REAL FIX)
     # ============================================================
     async def _populate_dialogs(self, client, uid):
-        """
-        🆕 REAL FIX for PeerIdInvalidError.
-        get_dialogs() ကိုခေါ်ပြီး session ထဲမှာ entity cache ဖြည့်တယ်။
-        """
         try:
             dialogs = await client.get_dialogs(limit=None)
             count = len(dialogs)
@@ -700,11 +713,9 @@ class SovereignBot:
         ok = fail = 0
         for c in self.ninja_clients:
             uid = getattr(c, "tg_user_id", "?")
-            # 🆕 Step 1: populate dialogs once per client
             if uid not in self.dialogs_populated:
                 await self._populate_dialogs(c, uid)
                 await asyncio.sleep(0.1)
-            # Step 2: try each chat_id
             for cid in chat_ids:
                 try:
                     await c.get_input_entity(cid)
@@ -719,11 +730,14 @@ class SovereignBot:
         logger.info(f"🔥 Entity cache done · ok={ok} fail={fail}")
         return ok, fail
 
-    def _pick_ninja(self, now: float) -> Optional[TelegramClient]:
+    def _pick_ninja(self, cid: int, now: float) -> Optional[TelegramClient]:
         eligible = []
         for c in self.ninja_clients:
             uid = getattr(c, "tg_user_id", None)
             if not uid:
+                continue
+            # 🆕 skip ninja ဒီ chat အတွက် blacklist ဖြစ်နေရင်
+            if self.ninja_chat_blacklist.get((uid, cid), 0) > now:
                 continue
             if self.spam_flood_until.get(uid, 0) > now:
                 continue
@@ -758,33 +772,50 @@ class SovereignBot:
 
     async def _send_with_retry(self, ninja, uid, cid, text) -> bool:
         """
-        🆕 FINAL FIX:
-        1. try send_message
-        2. on PeerIdInvalidError/ValueError → get_dialogs() → retry
+        🆕 FINAL:
+        - ChannelPrivateError / banned → (ninja,cid) blacklist 1h
+        - Entity ValueError → dialogs repopulate → retry
+          retry မရရင် (ninja,cid) blacklist 5min
         """
         try:
             await ninja.send_message(cid, text)
             return True
+
+        except (ChannelPrivateError, ChatWriteForbiddenError,
+                UserBannedInChannelError, UserNotParticipantError) as e:
+            self.ninja_chat_blacklist[(uid, cid)] = (
+                time.monotonic() + Config.BLACKLIST_PRIVATE_SEC
+            )
+            logger.warning(f"⛔ [{uid}→{cid}] {type(e).__name__} → blacklist 1h")
+            return False
+
         except (PeerIdInvalidError, ValueError) as e:
-            logger.warning(f"⚠️ Entity err [{uid}→{cid}]: {type(e).__name__}. Populating dialogs...")
+            logger.warning(f"⚠️ Entity err [{uid}→{cid}]: {type(e).__name__}. Re-populating...")
             try:
-                # 🆕 REAL FIX: get_dialogs() → session cache ဖြည့်
                 if uid not in self.dialogs_populated:
                     await self._populate_dialogs(ninja, uid)
-                # try get_entity (network request)
                 try:
-                    ent = await ninja.get_entity(cid)
-                    logger.info(f"🔍 [{uid}] found entity: {ent}")
+                    await ninja.get_entity(cid)
                 except Exception:
                     pass
                 await asyncio.sleep(0.3)
                 await ninja.send_message(cid, text)
                 logger.info(f"✅ Retry OK [{uid}→{cid}]")
                 return True
+            except (ChannelPrivateError, ChatWriteForbiddenError) as e2:
+                self.ninja_chat_blacklist[(uid, cid)] = (
+                    time.monotonic() + Config.BLACKLIST_PRIVATE_SEC
+                )
+                logger.warning(f"⛔ [{uid}→{cid}] {type(e2).__name__} → blacklist 1h")
+                return False
             except Exception as retry_e:
+                self.ninja_chat_blacklist[(uid, cid)] = (
+                    time.monotonic() + Config.BLACKLIST_ENTITY_SEC
+                )
                 logger.error(f"❌ Retry failed [{uid}→{cid}]: {type(retry_e).__name__}: {retry_e}")
                 await self._report("spam_send_retry", retry_e, f"uid={uid} cid={cid}")
                 return False
+
         except FloodWaitError:
             raise
         except Exception:
@@ -831,19 +862,20 @@ class SovereignBot:
                         if not self._is_chat_ready(cid, now):
                             continue
 
-                        ninja = self._pick_ninja(now)
+                        ninja = self._pick_ninja(cid, now)   # 🆕 cid ပေး
                         if not ninja:
-                            await asyncio.sleep(0.8)
-                            break
+                            # 🆕 break မဟုတ် — ဒီ chat ကို ကျော်ပြီး chat နောက်တစ်ခု ဆက်
+                            continue
 
                         uid = getattr(ninja, "tg_user_id", "?")
                         text = random.choice(Config.SPAM_TEXTS)
 
                         try:
                             ok = await self._send_with_retry(ninja, uid, cid, text)
+                            ts = time.monotonic()
+                            # 🆕 success/fail မရွေး ninja LRU update → rotation လည်
+                            self.spam_ninja_last[uid] = ts
                             if ok:
-                                ts = time.monotonic()
-                                self.spam_ninja_last[uid] = ts
                                 self.spam_chat_last[cid] = ts
                                 send_count += 1
                                 if send_count % 20 == 0:
@@ -958,35 +990,75 @@ class SovereignBot:
             lines.append(f"🎯 Auto-Catch: `{len(self.auto_catch_ids)}`")
             await event.reply("\n".join(lines), parse_mode="markdown")
 
-        @self.bot_client.on(events.NewMessage(pattern=r"^/removeninja(?:@\w+)?\s+(.+)$"))
+        # 🆕 /removeninja — user ID နဲ့ပဲ ဖျက်
+        @self.bot_client.on(events.NewMessage(pattern=r"^/removeninja(?:@\w+)?(?:\s+(\d+))?$"))
         async def remove_ninja(event):
             if event.sender_id != Config.OWNER_ID:
                 return
-            target = event.pattern_match.group(1).strip()
-            plist = await self.db.ninja_col.find().to_list(length=None)
+            arg = event.pattern_match.group(1)
+
+            # reply နဲ့လည်း ရ (ID ပါဝင်ရင်)
+            if not arg and event.is_reply:
+                r = await event.get_reply_message()
+                if r and r.text:
+                    m = re.search(r"(\d{5,})", r.text)
+                    if m:
+                        arg = m.group(1)
+
+            if not arg:
+                return await event.reply(
+                    "❓ **Usage:** `/removeninja <user_id>`\n"
+                    "ဥပမာ → `/removeninja 8538593411`",
+                    parse_mode="markdown",
+                )
+
+            target_id = int(arg)
+
+            # pool မှာ ရှာ
             idx = None
-            if target.isdigit():
-                idx = int(target) - 1
-            else:
-                for i, d in enumerate(plist):
-                    if d.get("name") == target:
-                        idx = i
-                        break
-            if idx is None or idx < 0 or idx >= len(plist):
-                return await event.reply(f"❌ Not found: {target}")
-            doc = plist[idx]
-            await self.db.ninja_col.delete_one({"_id": doc["_id"]})
-            if idx < len(self.ninja_clients):
-                c = self.ninja_clients.pop(idx)
-                self.ninja_names.pop(idx)
-                try:
-                    await c.disconnect()
-                except Exception:
-                    pass
-                self.chat_admin_cache.clear()
-                await event.reply(f"✅ Removed '{doc.get('name')}'.")
-            else:
-                await event.reply("✅ Removed from DB.")
+            for i, c in enumerate(self.ninja_clients):
+                if getattr(c, "tg_user_id", None) == target_id:
+                    idx = i
+                    break
+
+            if idx is None:
+                return await event.reply(
+                    f"❌ Ninja ID `{target_id}` pool ထဲမှာ မတွေ့ပါ။\n"
+                    f"💡 `/listninja` နဲ့ စစ်ပါ။",
+                    parse_mode="markdown",
+                )
+
+            # DB ကနေ ဖျက်
+            doc = await self.db.ninja_col.find_one({"tg_user_id": target_id})
+            if not doc:
+                # fallback: session နဲ့ ရှာ
+                plist = await self.db.ninja_col.find().to_list(length=None)
+                if idx < len(plist):
+                    doc = plist[idx]
+            if doc:
+                await self.db.ninja_col.delete_one({"_id": doc["_id"]})
+
+            c = self.ninja_clients.pop(idx)
+            name = self.ninja_names.pop(idx) if idx < len(self.ninja_names) else "Ninja"
+            self.ninja_ids.discard(target_id)
+            try:
+                await c.disconnect()
+            except Exception:
+                pass
+            self.chat_admin_cache.clear()
+            self.dialogs_populated.discard(target_id)
+            # blacklist ရှင်းပေး (ဒီ ninja အတွက်)
+            for k in list(self.ninja_chat_blacklist.keys()):
+                if k[0] == target_id:
+                    self.ninja_chat_blacklist.pop(k, None)
+
+            await event.reply(
+                f"✅ Removed ninja\n"
+                f"👤 Name: `{name}`\n"
+                f"🆔 ID: `{target_id}`\n"
+                f"👥 Pool left: `{len(self.ninja_clients)}`",
+                parse_mode="markdown",
+            )
 
         @self.bot_client.on(events.NewMessage(
             pattern=r"^/addauto(?:@\w+)?(?:\s+([\s\S]+))?$"
@@ -1355,7 +1427,7 @@ class SovereignBot:
             except Exception:
                 await event.reply(f"✅ Joined ({success} clients).")
 
-        # 🆕 /rewarm (FINAL FIX)
+        # 🆕 /rewarm — dialogs + blacklist ရှင်း
         @self.bot_client.on(events.NewMessage(pattern=r"^/rewarm(?:@\w+)?$"))
         async def rewarm_cmd(event):
             if event.sender_id != Config.OWNER_ID:
@@ -1366,13 +1438,16 @@ class SovereignBot:
                 f"This may take 1-2 minutes."
             )
             self.dialogs_populated.clear()
+            n_bl = len(self.ninja_chat_blacklist)
+            self.ninja_chat_blacklist.clear()
             ok, fail = await self._warm_entities(Config.SPAM_GROUPS)
             await status.edit(
                 f"✅ **Dialogs populated**\n"
                 f"👥 Ninjas: `{len(self.ninja_clients)}`\n"
                 f"📍 Groups: `{len(Config.SPAM_GROUPS)}`\n"
                 f"✔️ OK: `{ok}`\n"
-                f"✖️ Fail: `{fail}`\n\n"
+                f"✖️ Fail: `{fail}`\n"
+                f"🧹 Blacklist cleared: `{n_bl}`\n\n"
                 f"💡 `/spam` ပြန်ရိုက်ပါ"
             )
 
@@ -1385,11 +1460,13 @@ class SovereignBot:
             spam_active = sum(1 for v in self.ninja_spam_tasks.values() if v)
             now = time.monotonic()
             flooded = sum(1 for uid, t in self.spam_flood_until.items() if t > now)
+            bl = sum(1 for t in self.ninja_chat_blacklist.values() if t > now)
             await event.reply(
                 f"📊 **Status**\n"
                 f"🤖 Pool: `{len(self.ninja_clients)}`\n"
                 f"🎯 Auto-Catch: `{len(self.auto_catch_ids)}`\n"
                 f"⛔ Flooded: `{flooded}`\n"
+                f"🚫 Ninja×Chat blacklist: `{bl}`\n"
                 f"🎯 /startspam: {ss}\n"
                 f"🗣️ /spam loops: `{spam_active}`\n"
                 f"⏱️ Chat interval: `{Config.SPAM_GROUP_INTERVAL}s`\n"
@@ -1429,7 +1506,6 @@ class SovereignBot:
         await self.load_ninja_pools()
         await self.load_taunt_targets()
 
-        # 🆕 Auto-populate dialogs on startup
         logger.info("🔥 Auto-populating dialogs on startup...")
         await self._warm_entities(Config.SPAM_GROUPS)
 
