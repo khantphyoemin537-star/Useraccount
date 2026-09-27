@@ -49,7 +49,7 @@ class Config:
     W_REPLY_DELAY_MIN = 0.5
     W_REPLY_DELAY_MAX = 1.5
 
-    NINJA_IGNORED_EMOJIS = ["🪞", "✨", "⚡", "⚜️", "💮", "❓"]
+    NINJA_IGNORED_EMOJIS = ["🪞", "✨", "⚜️", "💮", "❓"]
 
     SPAWN_PHRASES = (
         "A CHARACTER HAS SPAWNED",
@@ -62,10 +62,10 @@ class Config:
     START_SPAM_MAX_DELAY = 15
     START_SPAM_JITTER = 0.10
 
-    SPAM_GROUP_INTERVAL = 0.2
-    SPAM_NINJA_COOLDOWN = 0.3
-    SPAM_JITTER = 0.30
-    SPAM_GLOBAL_DELAY = 0.3
+    SPAM_GROUP_INTERVAL = 0.1
+    SPAM_NINJA_COOLDOWN = 0.1
+    SPAM_JITTER = 0.1
+    SPAM_GLOBAL_DELAY = 0.1
     SPAM_PAUSE_AFTER_SPAWN = 3
 
     SPAM_TEXTS = [
