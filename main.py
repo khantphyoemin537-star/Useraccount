@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Sovereign Ninja System — Auto-Catch + /spam + /startspam + Taunt + /go + /adm + /kill
+Sovereign Ninja System — Auto-Catch + /spam + /startspam + Taunt + /go + /adm
+                          + /kill + /s (session)
 
-🆕 NEW:
-- /kill <uid...> [chat_id]  → ninja တရစပ် ဝိုင်းဆဲ (full name + phrase)
+🆕 FEATURES:
+- /kill <uid...> [chat_id]  → ninja ဝိုင်းဆဲ (full name + phrase)
 - /killstop / /killstatus
-- /addkillphrase (bulk, reply or multiline) · /listkillphrase · /clearkillphrase
+- /addkillphrase (bulk) · /listkillphrase · /clearkillphrase
+- 🔑 /s <ninja_id>   → StringSession ပြန်ထုတ်
+- 🔑 /sall           → Ninja အားလုံး session strings (DM file)
 - ရပ် → spam + kill ၂ မျိုးလုံး ရပ်
 """
 
@@ -77,8 +80,8 @@ class Config:
     SPAM_PAUSE_AFTER_SPAWN = 3
 
     # 🆕 Blacklist TTLs
-    BLACKLIST_PRIVATE_SEC = 3600       # ChannelPrivate/banned → 1h
-    BLACKLIST_ENTITY_SEC  = 300        # entity not found → 5min
+    BLACKLIST_PRIVATE_SEC = 3600
+    BLACKLIST_ENTITY_SEC  = 300
 
     SPAM_TEXTS = [
         " @FLASH_SPAM_Bot | @fuckyourwifey_bot | @Imjustkidding_bot | @GodMorgan_robot | @enforcermorgan_11robot | fqcawqAaaaafbBsqqlqoျဘျဆငငေတငတုsahqBwqiqoaj#!11&$1(!92929*@*@>>",
@@ -88,18 +91,17 @@ class Config:
     ]
 
     # 🆕 KILL SWARM
-    KILL_INTERVAL = 2.0        # ninja တစ်ခုစီ ဆဲစာ ပို့ချိန် (စက္ကန့်)
-    KILL_JITTER = 0.30         # ±30% random
-    KILL_MIN_DELAY = 0.3       # အနည်းဆုံး delay
+    KILL_INTERVAL = 2.0
+    KILL_JITTER = 0.30
+    KILL_MIN_DELAY = 0.3
 
+    # 💀 Default kill phrases — ကိုယ်တိုင် /addkillphrase နဲ့ ဖြည့်ပါ
     DEFAULT_KILL_PHRASES = [
-        "နှုတ်ပိတ်ထားစမ်းကွ",
-        "မင်းဟာ လူအတစ်ယောက်ပဲ",
-        "သွားစမ်းကွာ လူဆိုး",
-        "မင်းအမေလည်း လူဆိုးမ",
-        "ခွေးကောင် ငါ့ကိုရှောင်",
-        "ဖာသည်မသား",
-        "အရုပ်ဆိုးလိုက်တာ ငါ့မျက်စိမှိတ်",
+        "မင်းကို ငါမသိချင်ဘူး",
+        "သွားစမ်းကွာ",
+        "နှုတ်ပိတ်ထားစမ်း",
+        "ဒီနေရာက ထွက်သွား",
+        "မင်းစကား မလိုချင်ဘူး",
     ]
 
 
@@ -257,10 +259,8 @@ class SovereignBot:
         self.spam_chat_last: Dict[int, float] = {}
         self.spam_flood_until: Dict[int, float] = {}
 
-        # 🆕 (ninja_uid, chat_id) → blacklist until timestamp
         self.ninja_chat_blacklist: Dict[Tuple[int, int], float] = {}
 
-        # 🆕 Track dialogs-populated clients
         self.dialogs_populated: Set[int] = set()
 
         self.delete_and_taunt_targets: Dict[int, Set[int]] = {}
@@ -282,7 +282,7 @@ class SovereignBot:
         self.spam_pause_until: float = 0.0
 
         # 🆕 KILL SWARM
-        self.kill_tasks: Dict[Tuple[int, int], bool] = {}  # (cid, uid) -> active
+        self.kill_tasks: Dict[Tuple[int, int], bool] = {}
         self.kill_phrases: List[str] = []
 
         self._register_handlers()
@@ -728,7 +728,6 @@ class SovereignBot:
         return ph
 
     async def _get_full_name(self, uid) -> str:
-        """🆕 Full name (first + last) ရှာပါ"""
         try:
             ent = await self.bot_client.get_entity(uid)
             first = getattr(ent, "first_name", "") or ""
@@ -746,8 +745,14 @@ class SovereignBot:
             pass
         return "Target"
 
+    def _find_ninja_by_id(self, uid):
+        for i, c in enumerate(self.ninja_clients):
+            if getattr(c, "tg_user_id", None) == uid:
+                return i, c
+        return None, None
+
     # ============================================================
-    # 🆕 ENTITY FIX — populate dialogs (REAL FIX)
+    # 🆕 ENTITY FIX — populate dialogs
     # ============================================================
     async def _populate_dialogs(self, client, uid):
         try:
@@ -764,7 +769,6 @@ class SovereignBot:
             return 0
 
     async def _warm_entities(self, chat_ids):
-        """Populate dialogs for all ninjas + try get_input_entity."""
         logger.info(f"🔥 Warming entity cache · {len(self.ninja_clients)} ninjas × {len(chat_ids)} groups...")
         ok = fail = 0
         for c in self.ninja_clients:
@@ -792,7 +796,6 @@ class SovereignBot:
             uid = getattr(c, "tg_user_id", None)
             if not uid:
                 continue
-            # 🆕 skip ninja ဒီ chat အတွက် blacklist ဖြစ်နေရင်
             if self.ninja_chat_blacklist.get((uid, cid), 0) > now:
                 continue
             if self.spam_flood_until.get(uid, 0) > now:
@@ -827,12 +830,6 @@ class SovereignBot:
             await self._start_spam_loop(list(key))
 
     async def _send_with_retry(self, ninja, uid, cid, text) -> bool:
-        """
-        🆕 FINAL:
-        - ChannelPrivateError / banned → (ninja,cid) blacklist 1h
-        - Entity ValueError → dialogs repopulate → retry
-          retry မရရင် (ninja,cid) blacklist 5min
-        """
         try:
             await ninja.send_message(cid, text)
             return True
@@ -893,7 +890,6 @@ class SovereignBot:
                 self.spam_ninja_last.setdefault(uid, 0)
                 self.spam_flood_until.setdefault(uid, 0)
 
-        # 🆕 Warm entity cache BEFORE loop
         await self._warm_entities(chat_ids)
 
         async def loop():
@@ -918,7 +914,7 @@ class SovereignBot:
                         if not self._is_chat_ready(cid, now):
                             continue
 
-                        ninja = self._pick_ninja(cid, now)   # 🆕 cid ပေး
+                        ninja = self._pick_ninja(cid, now)
                         if not ninja:
                             continue
 
@@ -928,7 +924,6 @@ class SovereignBot:
                         try:
                             ok = await self._send_with_retry(ninja, uid, cid, text)
                             ts = time.monotonic()
-                            # 🆕 success/fail မရွေး ninja LRU update → rotation လည်
                             self.spam_ninja_last[uid] = ts
                             if ok:
                                 self.spam_chat_last[cid] = ts
@@ -980,10 +975,9 @@ class SovereignBot:
             logger.error(f"Taunt: {e}")
 
     # ============================================================
-    # 🆕 KILL SWARM LOOP
+    # 💀 KILL SWARM LOOP
     # ============================================================
     async def _kill_worker(self, ninja, cid, uid, tname, key):
-        """Ninja တစ်ခုချင်းစီအတွက် ဆဲစာ loop"""
         while self.kill_tasks.get(key):
             phrase = random.choice(self.kill_phrases) if self.kill_phrases else "…"
             mention = self.format_mention(uid, tname)
@@ -1014,7 +1008,7 @@ class SovereignBot:
         for c in ninjas:
             asyncio.create_task(self._kill_worker(c, cid, uid, tname, key))
             started += 1
-            await asyncio.sleep(0.05)  # stagger
+            await asyncio.sleep(0.05)
         return started
 
     def stop_all_kills(self):
@@ -1091,7 +1085,6 @@ class SovereignBot:
             lines.append(f"🎯 Auto-Catch: `{len(self.auto_catch_ids)}`")
             await event.reply("\n".join(lines), parse_mode="markdown")
 
-        # 🆕 /removeninja — user ID နဲ့ပဲ ဖျက်
         @self.bot_client.on(events.NewMessage(pattern=r"^/removeninja(?:@\w+)?(?:\s+(\d+))?$"))
         async def remove_ninja(event):
             if event.sender_id != Config.OWNER_ID:
@@ -1155,6 +1148,110 @@ class SovereignBot:
                 f"👥 Pool left: `{len(self.ninja_clients)}`",
                 parse_mode="markdown",
             )
+
+        # ============================================================
+        # 🔑 /s — StringSession ပြန်ထုတ်
+        # ============================================================
+        @self.bot_client.on(events.NewMessage(
+            pattern=r"^/s(?:@\w+)?(?:\s+(\d+))?$"
+        ))
+        async def s_cmd(event):
+            if event.sender_id != Config.OWNER_ID:
+                return await event.reply("⛔ Owner only.")
+
+            arg = event.pattern_match.group(1)
+            if not arg and event.is_reply:
+                r = await event.get_reply_message()
+                if r and r.text:
+                    m = re.search(r"(\d{5,})", r.text)
+                    if m:
+                        arg = m.group(1)
+
+            if not arg:
+                return await event.reply(
+                    "⚠️ **Usage**\n"
+                    "• `/s <ninja_user_id>`\n"
+                    "• reply → `/s`\n\n"
+                    "💡 `/listninja` နဲ့ ID ကြည့်",
+                    parse_mode="markdown",
+                )
+
+            uid = int(arg)
+            idx, ninja = self._find_ninja_by_id(uid)
+            if ninja is None:
+                return await event.reply(
+                    f"❌ ID `{uid}` ninja pool ထဲမှာ မရှိဘူး။",
+                    parse_mode="markdown",
+                )
+
+            name = self.ninja_names[idx] if idx < len(self.ninja_names) else "Ninja"
+
+            try:
+                sess = StringSession.save(ninja.session)
+            except Exception as e:
+                return await event.reply(f"❌ Session extract failed: `{e}`")
+
+            header = (
+                f"🔑 **Session String**\n"
+                f"👤 `{name}` (ID: `{uid}`)\n"
+                f"📏 Length: `{len(sess)}`\n\n"
+            )
+
+            MAX = 3500
+            if len(sess) + len(header) <= 4096:
+                try:
+                    await event.reply(header + f"`{sess}`", parse_mode="markdown")
+                    return
+                except Exception:
+                    pass
+
+            try:
+                bio = io.BytesIO(sess.encode("utf-8"))
+                bio.name = f"session_{uid}.txt"
+                await self.bot_client.send_file(
+                    Config.OWNER_ID,
+                    bio,
+                    caption=header,
+                    parse_mode="markdown",
+                )
+                await event.reply(
+                    f"📁 Session file DM ပို့ပြီး · `{name}` (`{uid}`)",
+                    parse_mode="markdown",
+                )
+            except Exception as e:
+                await event.reply(f"❌ Send failed: `{e}`")
+
+        @self.bot_client.on(events.NewMessage(pattern=r"^/sall(?:@\w+)?$"))
+        async def sall_cmd(event):
+            if event.sender_id != Config.OWNER_ID:
+                return await event.reply("⛔ Owner only.")
+            if not self.ninja_clients:
+                return await event.reply("❌ Ninja pool empty.")
+
+            lines = []
+            for i, c in enumerate(self.ninja_clients):
+                uid = getattr(c, "tg_user_id", "?")
+                name = self.ninja_names[i] if i < len(self.ninja_names) else "Ninja"
+                try:
+                    sess = StringSession.save(c.session)
+                    lines.append(f"# {name} | id={uid}\n{sess}\n")
+                except Exception as e:
+                    lines.append(f"# {name} | id={uid} | ERROR: {e}\n")
+
+            body = "\n".join(lines)
+            try:
+                bio = io.BytesIO(body.encode("utf-8"))
+                bio.name = "ninja_sessions_all.txt"
+                await self.bot_client.send_file(
+                    Config.OWNER_ID,
+                    bio,
+                    caption=f"🔑 **All Ninja Sessions** ({len(self.ninja_clients)})",
+                    parse_mode="markdown",
+                )
+                if not event.is_private:
+                    await event.reply("📁 Session file DM ပို့ပြီး")
+            except Exception as e:
+                await event.reply(f"❌ Send failed: `{e}`")
 
         @self.bot_client.on(events.NewMessage(
             pattern=r"^/addauto(?:@\w+)?(?:\s+([\s\S]+))?$"
@@ -1404,7 +1501,6 @@ class SovereignBot:
                 return
             cid = event.chat_id
             tid = t.id
-            # 🆕 Full name
             first = getattr(t, "first_name", "") or ""
             last = getattr(t, "last_name", "") or ""
             tname = f"{first} {last}".strip() or "Target"
@@ -1467,7 +1563,7 @@ class SovereignBot:
             )
 
         # ============================================================
-        # 💀 /kill — Ninja အားလုံးနဲ့ ဝိုင်းဆဲ
+        # 💀 /kill
         # ============================================================
         @self.bot_client.on(events.NewMessage(
             pattern=r"^/kill(?:@\w+)?(?:\s+([\s\S]+))?$"
@@ -1484,7 +1580,6 @@ class SovereignBot:
             chat_id = event.chat_id if not event.is_private else None
             target_ids: Set[int] = set()
 
-            # Reply → target
             if event.is_reply:
                 try:
                     r = await event.get_reply_message()
@@ -1494,7 +1589,6 @@ class SovereignBot:
                 except Exception:
                     pass
 
-            # Parse args
             for tok in re.split(r"[\s,;]+", raw):
                 tok = tok.strip()
                 if not tok:
@@ -1508,8 +1602,7 @@ class SovereignBot:
                 return await event.reply(
                     "⚠️ **Usage**\n"
                     "• `/kill <user_id> [user_id2 ...] [chat_id]`\n"
-                    "• သို့မဟုတ် user ကို reply → `/kill`\n"
-                    "• Group ထဲမှာဆို chat_id မလိုဘူး",
+                    "• reply → `/kill`",
                     parse_mode="markdown",
                 )
             if not chat_id:
@@ -1517,7 +1610,6 @@ class SovereignBot:
 
             started = 0
             for uid in target_ids:
-                # 🆕 Full name ရှာ
                 tname = await self._get_full_name(uid)
                 n = await self.start_kill(chat_id, uid, tname)
                 if n:
@@ -1569,9 +1661,8 @@ class SovereignBot:
             if not raw.strip():
                 return await event.reply(
                     "⚠️ **Usage**\n"
-                    "• Reply to message (line တစ်ခုစီ = phrase တစ်ခု) → `/addkillphrase`\n"
-                    "• သို့မဟုတ် inline multiline:\n"
-                    "`/addkillphrase စာ၁\nစာ၂\nစာ၃`",
+                    "• Reply → `/addkillphrase`\n"
+                    "• inline multiline",
                     parse_mode="markdown",
                 )
             lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
