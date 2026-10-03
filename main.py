@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Sovereign Ninja System — Auto-Catch + /spam + /startspam + Taunt + /go + /adm
+Sovereign Ninja System — Auto-Catch + /spam + /startspam + Taunt + /go + /adm + /kill
 
-🆕 FINAL FIX:
-- _populate_dialogs() : get_dialogs() ကိုသုံးပြီး entity cache ဖြည့်
-- _send_with_retry()   : dialogs ပြန်ဖြည့်ပြီး retry
-- /rewarm              : manual cache fix
-- Ninja×Chat blacklist : ChannelPrivateError / banned → skip
-- Spam loop rotation   : fail ဖြစ်ရင်လည်း LRU update → rotation လည်
-- /removeninja         : user ID နဲ့ပဲ ဖျက်
+🆕 NEW:
+- /kill <uid...> [chat_id]  → ninja တရစပ် ဝိုင်းဆဲ (full name + phrase)
+- /killstop / /killstatus
+- /addkillphrase (bulk, reply or multiline) · /listkillphrase · /clearkillphrase
+- ရပ် → spam + kill ၂ မျိုးလုံး ရပ်
 """
 
 import asyncio, io, logging, os, random, re, sys, threading, time, unicodedata
@@ -87,6 +85,21 @@ class Config:
         " @GodMorgan_robot | @Imjustkidding_bot | qwertyuiopASDFGHJKLzxcvbnm123rkrkeekekek4567890!@#$%",
         " @enforcermorgan_11robot | fqcawqAaaaafbBsqqlqo ျဘျဆငငေejejejejeejwjjeejတငတု 1234567890",
         " @FLASH_SPAM_Bot | @fuckyourwifey_bot | spam text alternative hshahahahahaahahajajsjsjsjsjsjsjsjsjversion here",
+    ]
+
+    # 🆕 KILL SWARM
+    KILL_INTERVAL = 2.0        # ninja တစ်ခုစီ ဆဲစာ ပို့ချိန် (စက္ကန့်)
+    KILL_JITTER = 0.30         # ±30% random
+    KILL_MIN_DELAY = 0.3       # အနည်းဆုံး delay
+
+    DEFAULT_KILL_PHRASES = [
+        "နှုတ်ပိတ်ထားစမ်းကွ",
+        "မင်းဟာ လူအတစ်ယောက်ပဲ",
+        "သွားစမ်းကွာ လူဆိုး",
+        "မင်းအမေလည်း လူဆိုးမ",
+        "ခွေးကောင် ငါ့ကိုရှောင်",
+        "ဖာသည်မသား",
+        "အရုပ်ဆိုးလိုက်တာ ငါ့မျက်စိမှိတ်",
     ]
 
 
@@ -219,6 +232,8 @@ class DatabaseManager:
     def taunt_targets(self): return self.db["taunt_targets"]
     @property
     def auto_catch_col(self): return self.db["auto_catch_col"]
+    @property
+    def kill_col(self): return self.db["kill_col"]
 
 
 # ---------- Bot ----------
@@ -265,6 +280,10 @@ class SovereignBot:
         self.start_spam_active: bool = False
 
         self.spam_pause_until: float = 0.0
+
+        # 🆕 KILL SWARM
+        self.kill_tasks: Dict[Tuple[int, int], bool] = {}  # (cid, uid) -> active
+        self.kill_phrases: List[str] = []
 
         self._register_handlers()
 
@@ -318,6 +337,24 @@ class SovereignBot:
         if cid in self.delete_and_taunt_targets:
             del self.delete_and_taunt_targets[cid]
             await self.db.taunt_targets.delete_one({"chat_id": cid})
+
+    # ============================================================
+    # 🆕 KILL PHRASES (DB)
+    # ============================================================
+    async def _load_kill_phrases(self):
+        doc = await self.db.kill_col.find_one({"_id": "phrases"})
+        if doc and doc.get("phrases"):
+            self.kill_phrases = list(doc["phrases"])
+        else:
+            self.kill_phrases = list(Config.DEFAULT_KILL_PHRASES)
+        logger.info(f"💀 Kill phrases: {len(self.kill_phrases)}")
+
+    async def _save_kill_phrases(self):
+        await self.db.kill_col.update_one(
+            {"_id": "phrases"},
+            {"$set": {"phrases": self.kill_phrases}},
+            upsert=True,
+        )
 
     # ============================================================
     # ADMIN CACHE
@@ -690,6 +727,25 @@ class SovereignBot:
         self.phrase_indices[cid] = (i + 1) % len(p)
         return ph
 
+    async def _get_full_name(self, uid) -> str:
+        """🆕 Full name (first + last) ရှာပါ"""
+        try:
+            ent = await self.bot_client.get_entity(uid)
+            first = getattr(ent, "first_name", "") or ""
+            last = getattr(ent, "last_name", "") or ""
+            full = f"{first} {last}".strip()
+            if full:
+                return full
+            uname = getattr(ent, "username", None)
+            if uname:
+                return f"@{uname}"
+            title = getattr(ent, "title", None)
+            if title:
+                return title
+        except Exception:
+            pass
+        return "Target"
+
     # ============================================================
     # 🆕 ENTITY FIX — populate dialogs (REAL FIX)
     # ============================================================
@@ -864,7 +920,6 @@ class SovereignBot:
 
                         ninja = self._pick_ninja(cid, now)   # 🆕 cid ပေး
                         if not ninja:
-                            # 🆕 break မဟုတ် — ဒီ chat ကို ကျော်ပြီး chat နောက်တစ်ခု ဆက်
                             continue
 
                         uid = getattr(ninja, "tg_user_id", "?")
@@ -923,6 +978,52 @@ class SovereignBot:
             await c.send_message(cid, f"{mention} {phrase}", parse_mode="html")
         except Exception as e:
             logger.error(f"Taunt: {e}")
+
+    # ============================================================
+    # 🆕 KILL SWARM LOOP
+    # ============================================================
+    async def _kill_worker(self, ninja, cid, uid, tname, key):
+        """Ninja တစ်ခုချင်းစီအတွက် ဆဲစာ loop"""
+        while self.kill_tasks.get(key):
+            phrase = random.choice(self.kill_phrases) if self.kill_phrases else "…"
+            mention = self.format_mention(uid, tname)
+            try:
+                await ninja.send_message(cid, f"{mention} {phrase}", parse_mode="html")
+            except FloodWaitError as e:
+                await asyncio.sleep(min(e.seconds + 2, 60))
+                continue
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass
+            jitter = Config.KILL_INTERVAL * random.uniform(
+                -Config.KILL_JITTER, Config.KILL_JITTER)
+            await asyncio.sleep(max(Config.KILL_MIN_DELAY,
+                                    Config.KILL_INTERVAL + jitter))
+
+    async def start_kill(self, cid, uid, tname):
+        key = (cid, uid)
+        if self.kill_tasks.get(key):
+            return 0
+        if not self.ninja_clients or not self.kill_phrases:
+            return 0
+        self.kill_tasks[key] = True
+        started = 0
+        ninjas = list(self.ninja_clients)
+        random.shuffle(ninjas)
+        for c in ninjas:
+            asyncio.create_task(self._kill_worker(c, cid, uid, tname, key))
+            started += 1
+            await asyncio.sleep(0.05)  # stagger
+        return started
+
+    def stop_all_kills(self):
+        n = 0
+        for k in list(self.kill_tasks.keys()):
+            if self.kill_tasks[k]:
+                self.kill_tasks[k] = False
+                n += 1
+        return n
 
     # ============================================================
     # COMMAND HANDLERS
@@ -997,7 +1098,6 @@ class SovereignBot:
                 return
             arg = event.pattern_match.group(1)
 
-            # reply နဲ့လည်း ရ (ID ပါဝင်ရင်)
             if not arg and event.is_reply:
                 r = await event.get_reply_message()
                 if r and r.text:
@@ -1014,7 +1114,6 @@ class SovereignBot:
 
             target_id = int(arg)
 
-            # pool မှာ ရှာ
             idx = None
             for i, c in enumerate(self.ninja_clients):
                 if getattr(c, "tg_user_id", None) == target_id:
@@ -1028,10 +1127,8 @@ class SovereignBot:
                     parse_mode="markdown",
                 )
 
-            # DB ကနေ ဖျက်
             doc = await self.db.ninja_col.find_one({"tg_user_id": target_id})
             if not doc:
-                # fallback: session နဲ့ ရှာ
                 plist = await self.db.ninja_col.find().to_list(length=None)
                 if idx < len(plist):
                     doc = plist[idx]
@@ -1047,7 +1144,6 @@ class SovereignBot:
                 pass
             self.chat_admin_cache.clear()
             self.dialogs_populated.discard(target_id)
-            # blacklist ရှင်းပေး (ဒီ ninja အတွက်)
             for k in list(self.ninja_chat_blacklist.keys()):
                 if k[0] == target_id:
                     self.ninja_chat_blacklist.pop(k, None)
@@ -1308,7 +1404,10 @@ class SovereignBot:
                 return
             cid = event.chat_id
             tid = t.id
-            tname = t.first_name or "Target"
+            # 🆕 Full name
+            first = getattr(t, "first_name", "") or ""
+            last = getattr(t, "last_name", "") or ""
+            tname = f"{first} {last}".strip() or "Target"
 
             admins = await self._get_admin_clients(cid)
             if not admins:
@@ -1367,17 +1466,169 @@ class SovereignBot:
                 parse_mode="markdown",
             )
 
+        # ============================================================
+        # 💀 /kill — Ninja အားလုံးနဲ့ ဝိုင်းဆဲ
+        # ============================================================
+        @self.bot_client.on(events.NewMessage(
+            pattern=r"^/kill(?:@\w+)?(?:\s+([\s\S]+))?$"
+        ))
+        async def kill_cmd(event):
+            if event.sender_id != Config.OWNER_ID:
+                return await event.reply("⛔ Owner only.")
+            if not self.ninja_clients:
+                return await event.reply("❌ Ninja pool empty.")
+            if not self.kill_phrases:
+                await self._load_kill_phrases()
+
+            raw = event.pattern_match.group(1) or ""
+            chat_id = event.chat_id if not event.is_private else None
+            target_ids: Set[int] = set()
+
+            # Reply → target
+            if event.is_reply:
+                try:
+                    r = await event.get_reply_message()
+                    s = await r.get_sender()
+                    if s:
+                        target_ids.add(s.id)
+                except Exception:
+                    pass
+
+            # Parse args
+            for tok in re.split(r"[\s,;]+", raw):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                if re.match(r"^-100\d+$", tok):
+                    chat_id = int(tok)
+                elif re.match(r"^\d{5,}$", tok):
+                    target_ids.add(int(tok))
+
+            if not target_ids:
+                return await event.reply(
+                    "⚠️ **Usage**\n"
+                    "• `/kill <user_id> [user_id2 ...] [chat_id]`\n"
+                    "• သို့မဟုတ် user ကို reply → `/kill`\n"
+                    "• Group ထဲမှာဆို chat_id မလိုဘူး",
+                    parse_mode="markdown",
+                )
+            if not chat_id:
+                return await event.reply("❌ chat_id မသိပါ။ Group ထဲမှာ ရိုက်ပါ။")
+
+            started = 0
+            for uid in target_ids:
+                # 🆕 Full name ရှာ
+                tname = await self._get_full_name(uid)
+                n = await self.start_kill(chat_id, uid, tname)
+                if n:
+                    started += 1
+            await event.reply(
+                f"💀 **KILL SWARM STARTED**\n"
+                f"🎯 Targets: `{started}`\n"
+                f"📍 Chat: `{chat_id}`\n"
+                f"🥷 Ninjas: `{len(self.ninja_clients)}`\n"
+                f"⏱️ Interval: `{Config.KILL_INTERVAL}s` / ninja\n"
+                f"📜 Phrases: `{len(self.kill_phrases)}`",
+                parse_mode="markdown",
+            )
+
+        @self.bot_client.on(events.NewMessage(pattern=r"^/killstop(?:@\w+)?$"))
+        async def killstop_cmd(event):
+            if event.sender_id != Config.OWNER_ID:
+                return
+            n = self.stop_all_kills()
+            await event.reply(f"🛑 Kill stopped · {n} target(s)")
+
+        @self.bot_client.on(events.NewMessage(pattern=r"^/killstatus(?:@\w+)?$"))
+        async def killstatus_cmd(event):
+            if event.sender_id != Config.OWNER_ID:
+                return
+            active = [k for k, v in self.kill_tasks.items() if v]
+            if not active:
+                return await event.reply("💀 No active kill.")
+            lines = [f"💀 **Active Kills ({len(active)})**"]
+            for cid, uid in active:
+                name = await self._get_full_name(uid)
+                lines.append(f"  • chat `{cid}` → `{uid}` ({name})")
+            await event.reply("\n".join(lines), parse_mode="markdown")
+
+        # ============================================================
+        # 📜 BULK KILL PHRASES
+        # ============================================================
+        @self.bot_client.on(events.NewMessage(
+            pattern=r"^/addkillphrase(?:@\w+)?(?:\s+([\s\S]+))?$"
+        ))
+        async def addkillphrase_cmd(event):
+            if event.sender_id != Config.OWNER_ID:
+                return await event.reply("⛔ Owner only.")
+            raw = event.pattern_match.group(1) or ""
+            if event.is_reply:
+                r = await event.get_reply_message()
+                if r and r.text:
+                    raw = (raw + "\n" + r.text).strip()
+            if not raw.strip():
+                return await event.reply(
+                    "⚠️ **Usage**\n"
+                    "• Reply to message (line တစ်ခုစီ = phrase တစ်ခု) → `/addkillphrase`\n"
+                    "• သို့မဟုတ် inline multiline:\n"
+                    "`/addkillphrase စာ၁\nစာ၂\nစာ၃`",
+                    parse_mode="markdown",
+                )
+            lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+            if not lines:
+                return await event.reply("❌ Empty.")
+            existing = set(self.kill_phrases)
+            new_lines = [ln for ln in lines if ln not in existing]
+            self.kill_phrases.extend(new_lines)
+            await self._save_kill_phrases()
+            await event.reply(
+                f"✅ Added `{len(new_lines)}` phrase(s) · "
+                f"skipped `{len(lines)-len(new_lines)}` dup · "
+                f"Total `{len(self.kill_phrases)}`",
+                parse_mode="markdown",
+            )
+
+        @self.bot_client.on(events.NewMessage(pattern=r"^/listkillphrase(?:@\w+)?$"))
+        async def listkillphrase_cmd(event):
+            if event.sender_id != Config.OWNER_ID:
+                return
+            if not self.kill_phrases:
+                return await event.reply("📭 Empty.")
+            cap = 60
+            lines = [f"📜 **Kill Phrases ({len(self.kill_phrases)})**"]
+            for i, p in enumerate(self.kill_phrases[:cap], 1):
+                lines.append(f"{i}. {p}")
+            if len(self.kill_phrases) > cap:
+                lines.append(f"… +{len(self.kill_phrases)-cap} more")
+            await event.reply("\n".join(lines), parse_mode="markdown")
+
+        @self.bot_client.on(events.NewMessage(pattern=r"^/clearkillphrase(?:@\w+)?$"))
+        async def clearkillphrase_cmd(event):
+            if event.sender_id != Config.OWNER_ID:
+                return
+            n = len(self.kill_phrases)
+            self.kill_phrases = list(Config.DEFAULT_KILL_PHRASES)
+            await self._save_kill_phrases()
+            await event.reply(
+                f"🗑️ Cleared `{n}` · reset to `{len(self.kill_phrases)}` defaults",
+                parse_mode="markdown",
+            )
+
         @self.bot_client.on(events.NewMessage(pattern=r"^(ရပ်|/stop(?:@\w+)?)$"))
         async def stop_cmd(event):
             if event.sender_id != Config.OWNER_ID:
                 return
             cid = event.chat_id
-            stopped = False
+            stopped = 0
             for k in list(self.ninja_spam_tasks.keys()):
                 if cid in k or event.sender_id == Config.OWNER_ID:
                     self.ninja_spam_tasks[k] = False
-                    stopped = True
-            await event.reply("🛑 Spam stopped." if stopped else "ℹ️ Nothing to stop.")
+                    stopped += 1
+            kill_stopped = self.stop_all_kills()
+            await event.reply(
+                f"🛑 Spam stopped: `{stopped}` · Kill stopped: `{kill_stopped}`",
+                parse_mode="markdown",
+            )
 
         @self.bot_client.on(events.NewMessage(pattern=r"^/go(?:@\w+)?$"))
         async def go_group(event):
@@ -1420,14 +1671,13 @@ class SovereignBot:
                     logger.error(f"Join: {e}")
                 await asyncio.sleep(0.3)
             self.chat_admin_cache.clear()
-            self.dialogs_populated.clear()  # 🆕 reset
+            self.dialogs_populated.clear()
             try:
                 chat = await clients[0].get_entity(link)
                 await event.reply(f"✅ Joined `{chat.title}` ({success} clients). ID: `{chat.id}`")
             except Exception:
                 await event.reply(f"✅ Joined ({success} clients).")
 
-        # 🆕 /rewarm — dialogs + blacklist ရှင်း
         @self.bot_client.on(events.NewMessage(pattern=r"^/rewarm(?:@\w+)?$"))
         async def rewarm_cmd(event):
             if event.sender_id != Config.OWNER_ID:
@@ -1461,6 +1711,7 @@ class SovereignBot:
             now = time.monotonic()
             flooded = sum(1 for uid, t in self.spam_flood_until.items() if t > now)
             bl = sum(1 for t in self.ninja_chat_blacklist.values() if t > now)
+            kills = sum(1 for v in self.kill_tasks.values() if v)
             await event.reply(
                 f"📊 **Status**\n"
                 f"🤖 Pool: `{len(self.ninja_clients)}`\n"
@@ -1469,6 +1720,8 @@ class SovereignBot:
                 f"🚫 Ninja×Chat blacklist: `{bl}`\n"
                 f"🎯 /startspam: {ss}\n"
                 f"🗣️ /spam loops: `{spam_active}`\n"
+                f"💀 Active kills: `{kills}`\n"
+                f"📜 Kill phrases: `{len(self.kill_phrases)}`\n"
                 f"⏱️ Chat interval: `{Config.SPAM_GROUP_INTERVAL}s`\n"
                 f"🛡️ Ninja cooldown: `{Config.SPAM_NINJA_COOLDOWN}s`\n"
                 f"🔥 Dialogs populated: `{len(self.dialogs_populated)}`\n"
@@ -1487,7 +1740,9 @@ class SovereignBot:
                 if event.text:
                     try:
                         t = await event.get_sender()
-                        name = t.first_name if t else "Target"
+                        first = getattr(t, "first_name", "") or ""
+                        last = getattr(t, "last_name", "") or ""
+                        name = f"{first} {last}".strip() or "Target"
                     except Exception:
                         name = "Target"
                     asyncio.create_task(self._taunt_user(cid, sid, event.id, name))
@@ -1502,6 +1757,7 @@ class SovereignBot:
         logger.info(f"🤖 Bot started: @{me.username} ({self.bot_id})")
 
         await self._load_auto_catch_ids()
+        await self._load_kill_phrases()
 
         await self.load_ninja_pools()
         await self.load_taunt_targets()
@@ -1516,6 +1772,7 @@ class SovereignBot:
     async def stop(self):
         if self.start_spam_active:
             await self.stop_start_spam()
+        self.stop_all_kills()
         if self.bot_client.is_connected():
             await self.bot_client.disconnect()
         for c in self.ninja_clients:
