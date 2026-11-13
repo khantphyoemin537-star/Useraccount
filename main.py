@@ -30,7 +30,7 @@ from telethon.tl.functions.messages import ImportChatInviteRequest
 
 
 class Config:
-    OWNER_ID = int(os.getenv("OWNER_ID", "8990740712"))
+    OWNER_ID = int(os.getenv("OWNER_ID", "6015356597"))
     MONGO_URI = os.getenv("MONGO_URI",
         "mongodb+srv://kkt:h1BdaMt7nxW9jTXa@cluster0.kb5fzfl.mongodb.net/?appName=Cluster0&tlsAllowInvalidCertificates=true")
     API_ID = int(os.getenv("API_ID", "35766004"))
