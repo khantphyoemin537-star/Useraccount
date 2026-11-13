@@ -8,6 +8,7 @@ FEATURES:
 - Auto-invite ninjas (slow mode, needs main bot admin + Invite Users)
 - Silent expected errors (no owner DM spam)
 - Slow pace to prevent flood
+- /del : API bot bulk-deletes all ninja messages, then ninjas leave
 """
 
 import asyncio, io, logging, os, random, re, sys, threading, time
@@ -70,6 +71,13 @@ class Config:
     INVITE_LINK_CACHE_SEC = 3600
     INVITE_AUTO_ON_SPAM = True
 
+    # ── /del bulk purge pacing (FAST but flood-safe) ──
+    DEL_BATCH_SIZE     = 100    # TG max per deleteMessages call
+    DEL_BATCH_SLEEP    = 0.4    # seconds between delete batches
+    DEL_NINJA_GAP      = 0.3    # gap between ninjas (delete phase)
+    DEL_LEAVE_GAP      = 0.8    # gap between ninjas (leave phase)
+    DEL_PROGRESS_EVERY = 500    # log + edit status every N deletes
+
     SPAM_TEXTS = [
         " @FLASH_SPAM_Bot | @fuckyourwifey_bot | @Imjustkidding_bot | @GodMorgan_robot | @enforcermorgan_11robot | fqcawqAaaaafbBsqqlqoျဘျဆငငေတငတုsahqBwqiqoaj#!11&$1(!92929*@*@>>",
         " @GodMorgan_robot | @Imjustkidding_bot | qwertyuiopASDFGHJKLzxcvbnm123rkrkeekekek4567890!@#$%",
@@ -108,7 +116,6 @@ async def report_error(bot_client, context: str, exc: Exception, extra: str = ""
             return
         _error_dedup[key] = now
 
-        # Expected errors → log only, no owner DM
         silent_types = (
             UserNotParticipantError,
             ChannelPrivateError,
@@ -183,7 +190,6 @@ class SovereignBot:
         self.ninja_names: List[str] = []
         self.ninja_ids: Set[int] = set()
 
-        # Spam groups (dynamic)
         self.spam_groups: List[int] = []
 
         self.ninja_spam_tasks: Dict[Tuple[int, ...], bool] = {}
@@ -194,13 +200,11 @@ class SovereignBot:
 
         self.ninja_chat_blacklist: Dict[Tuple[int, int], float] = {}
 
-        # Ninja skip-on-error
         self.ninja_error_count: Dict[int, int] = {}
         self.ninja_dead_until: Dict[int, float] = {}
 
         self.dialogs_populated: Set[int] = set()
 
-        # Auto-invite cache
         self.invite_links: Dict[int, Tuple[str, float]] = {}
 
         self.start_spam_tasks: Dict[int, asyncio.Task] = {}
@@ -366,7 +370,7 @@ class SovereignBot:
         return stopped
 
     # ============================================================
-    # NINJA HANDLERS (only join)
+    # NINJA HANDLERS
     # ============================================================
     def _register_ninja_handlers(self, client):
         client.add_event_handler(self._ninja_join_handler, events.ChatAction())
@@ -418,9 +422,6 @@ class SovereignBot:
                 return i, c
         return None, None
 
-    # ============================================================
-    # NINJA ERROR TRACKING
-    # ============================================================
     def _mark_ninja_ok(self, uid):
         if uid in self.ninja_error_count:
             self.ninja_error_count[uid] = 0
@@ -438,9 +439,6 @@ class SovereignBot:
                 f"💀 Ninja {uid} → dead for {Config.NINJA_DEAD_TIME}s (too many errors)"
             )
 
-    # ============================================================
-    # ENTITY FIX
-    # ============================================================
     async def _populate_dialogs(self, client, uid):
         try:
             dialogs = await client.get_dialogs(limit=None)
@@ -713,7 +711,6 @@ class SovereignBot:
                 self.spam_ninja_last.setdefault(uid, 0)
                 self.spam_flood_until.setdefault(uid, 0)
 
-        # Auto-invite before spam
         if Config.INVITE_AUTO_ON_SPAM:
             logger.info(f"📨 Auto-inviting ninjas to {len(chat_ids)} groups (slow mode)...")
             for cid in chat_ids:
@@ -781,6 +778,205 @@ class SovereignBot:
 
         task = asyncio.create_task(loop())
         asyncio.create_task(self._spam_watchdog(key, task))
+
+    # ============================================================
+    # BULK PURGE (called by /del)
+    # ============================================================
+    async def _bulk_purge_all(self, status_msg, event):
+        """Bot deletes all ninja messages in all groups, then ninjas leave."""
+        from telethon.tl.functions.channels import LeaveChannelRequest
+
+        total_deleted = 0
+        total_leaves_ok = 0
+        total_leaves_fail = 0
+        group_report: List[str] = []
+        n_groups = len(self.spam_groups)
+        started_at = time.time()
+
+        for gi, cid in enumerate(list(self.spam_groups), 1):
+            g_deleted = 0
+            g_leave_ok = 0
+            g_leave_fail = 0
+
+            # ── pre-check bot perms ──
+            try:
+                p = await self.bot_client.get_permissions(cid, "me")
+                is_admin = bool(p and getattr(p, "is_admin", False))
+                can_del = bool(p and getattr(p, "delete_messages", False))
+                if not (is_admin and can_del):
+                    group_report.append(
+                        f"`{cid}` · ⚠️ bot needs admin + delete_messages "
+                        f"(admin={is_admin}, del={can_del}) → **skipped**"
+                    )
+                    logger.warning(f"⚠️ {cid} skip: bot lacks delete perm")
+                    continue
+            except Exception as e:
+                group_report.append(
+                    f"`{cid}` · ⚠️ perm check failed: `{type(e).__name__}` → skipped"
+                )
+                logger.warning(f"⚠️ {cid} perm check: {e}")
+                continue
+
+            logger.info(f"🧹 [{gi}/{n_groups}] BOT purge {cid} · ninjas={len(self.ninja_clients)}")
+
+            # ══ PHASE 1: BOT deletes each ninja's messages ══
+            for ni, ninja in enumerate(self.ninja_clients, 1):
+                uid = getattr(ninja, "tg_user_id", None)
+                if not uid:
+                    try:
+                        me = await ninja.get_me()
+                        uid = me.id
+                        ninja.tg_user_id = uid
+                    except Exception:
+                        continue
+
+                batch: List[int] = []
+                try:
+                    async for msg in self.bot_client.iter_messages(
+                        cid, from_user=uid, limit=None
+                    ):
+                        batch.append(msg.id)
+                        if len(batch) >= Config.DEL_BATCH_SIZE:
+                            try:
+                                await self.bot_client.delete_messages(cid, batch)
+                                g_deleted += len(batch)
+                                total_deleted += len(batch)
+                            except FloodWaitError as fw:
+                                logger.warning(
+                                    f"⛔ bot flood delete {fw.seconds}s → cooling"
+                                )
+                                await asyncio.sleep(fw.seconds + 5)
+                                try:
+                                    await self.bot_client.delete_messages(cid, batch)
+                                    g_deleted += len(batch)
+                                    total_deleted += len(batch)
+                                except Exception:
+                                    pass
+                            except Exception as e:
+                                logger.debug(
+                                    f"bot del batch [{uid}→{cid}]: {type(e).__name__}"
+                                )
+
+                            if total_deleted % Config.DEL_PROGRESS_EVERY == 0:
+                                try:
+                                    await status_msg.edit(
+                                        f"🧹 **PURGE RUNNING**\n"
+                                        f"📍 Group {gi}/{n_groups} · `{cid}`\n"
+                                        f"🥷 Ninja {ni}/{len(self.ninja_clients)} · uid=`{uid}`\n"
+                                        f"🗑️ Deleted so far: `{total_deleted}`",
+                                        parse_mode="markdown",
+                                    )
+                                except Exception:
+                                    pass
+                                logger.info(
+                                    f"📊 progress · total_deleted={total_deleted}"
+                                )
+
+                            batch.clear()
+                            await asyncio.sleep(Config.DEL_BATCH_SLEEP)
+
+                    # final partial batch
+                    if batch:
+                        try:
+                            await self.bot_client.delete_messages(cid, batch)
+                            g_deleted += len(batch)
+                            total_deleted += len(batch)
+                        except FloodWaitError as fw:
+                            await asyncio.sleep(fw.seconds + 5)
+                            try:
+                                await self.bot_client.delete_messages(cid, batch)
+                                g_deleted += len(batch)
+                                total_deleted += len(batch)
+                            except Exception:
+                                pass
+                        except Exception as e:
+                            logger.debug(
+                                f"bot del final [{uid}→{cid}]: {type(e).__name__}"
+                            )
+                        batch.clear()
+                        await asyncio.sleep(0.3)
+
+                except FloodWaitError as e:
+                    await asyncio.sleep(e.seconds + 5)
+                except Exception as e:
+                    logger.debug(
+                        f"purge iter [{uid}→{cid}]: {type(e).__name__}: {e}"
+                    )
+
+                await asyncio.sleep(Config.DEL_NINJA_GAP)
+
+            logger.info(f"🧹 {cid} deleted={g_deleted} → ninjas leave")
+
+            # ══ PHASE 2: every ninja leaves the group ══
+            for ninja in self.ninja_clients:
+                uid = getattr(ninja, "tg_user_id", "?")
+                try:
+                    ent = await ninja.get_input_entity(cid)
+                except Exception:
+                    g_leave_fail += 1
+                    total_leaves_fail += 1
+                    await asyncio.sleep(0.4)
+                    continue
+
+                left = False
+                for _attempt in range(2):
+                    try:
+                        await ninja(LeaveChannelRequest(ent))
+                        left = True
+                        break
+                    except FloodWaitError as fw:
+                        await asyncio.sleep(fw.seconds + 5)
+                    except Exception as e:
+                        logger.debug(
+                            f"leave [{uid}→{cid}]: {type(e).__name__}: {e}"
+                        )
+                        break
+
+                if not left:
+                    # fallback for basic groups
+                    try:
+                        await ninja.delete_dialog(cid)
+                        left = True
+                    except Exception:
+                        pass
+
+                if left:
+                    g_leave_ok += 1
+                    total_leaves_ok += 1
+                else:
+                    g_leave_fail += 1
+                    total_leaves_fail += 1
+                await asyncio.sleep(Config.DEL_LEAVE_GAP)
+
+            group_report.append(
+                f"`{cid}` · del={g_deleted} · "
+                f"leave={g_leave_ok}ok/{g_leave_fail}fail"
+            )
+            self.spam_chat_last.pop(cid, None)
+            self.invite_links.pop(cid, None)
+
+        self.dialogs_populated.clear()
+        elapsed = time.time() - started_at
+
+        summary = (
+            f"✅ **BULK PURGE COMPLETE**\n"
+            f"⏱️ Took: `{elapsed:.0f}s`\n\n"
+            f"🗑️ Messages deleted (by bot): `{total_deleted}`\n"
+            f"🚪 Ninja leaves OK: `{total_leaves_ok}` · fail: `{total_leaves_fail}`\n\n"
+            f"**Per-group:**\n" + "\n".join(group_report[:25])
+        )
+        if len(summary) > 4000:
+            summary = summary[:4000] + "\n…"
+
+        try:
+            await status_msg.edit(summary, parse_mode="markdown")
+        except Exception:
+            try:
+                await self.bot_client.send_message(
+                    Config.OWNER_ID, summary, parse_mode="markdown"
+                )
+            except Exception:
+                pass
 
     # ============================================================
     # COMMAND HANDLERS
@@ -1311,6 +1507,47 @@ class SovereignBot:
             await status.edit(
                 f"✅ joined=`{j}` already=`{s}` · total=`{len(self.ninja_clients)}`"
             )
+
+        # ══════════════════════════════════════════════════════════
+        # /del — API BOT bulk-deletes all ninja messages → ninjas leave
+        # ══════════════════════════════════════════════════════════
+        @self.bot_client.on(events.NewMessage(pattern=r"^(/del|del)(?:@\w+)?$"))
+        async def del_cmd(event):
+            if event.sender_id != Config.OWNER_ID:
+                return
+            if not self.spam_groups:
+                return await event.reply(
+                    "❌ `/addgroup` နဲ့ group အရင်ထည့်ပါ။",
+                    parse_mode="markdown",
+                )
+            if not self.ninja_clients:
+                return await event.reply("❌ Ninja pool empty.")
+
+            # stop all active spam loops first
+            stopped = 0
+            for k in list(self.ninja_spam_tasks.keys()):
+                if self.ninja_spam_tasks[k]:
+                    self.ninja_spam_tasks[k] = False
+                    stopped += 1
+
+            status = await event.reply(
+                f"🧹 **BULK PURGE STARTING**\n"
+                f"🤖 Deleter: **API bot** (needs admin + `delete_messages`)\n"
+                f"📍 Groups: `{len(self.spam_groups)}`\n"
+                f"🥷 Ninjas: `{len(self.ninja_clients)}`\n"
+                f"⏹️ Spam loops stopped: `{stopped}`\n"
+                f"⚡ Fast mode: `{Config.DEL_BATCH_SLEEP}s`/batch, `{Config.DEL_BATCH_SIZE}` msg/batch",
+                parse_mode="markdown",
+            )
+
+            try:
+                await self._bulk_purge_all(status, event)
+            except Exception as e:
+                logger.error(f"/del failed: {e}")
+                try:
+                    await status.edit(f"❌ Purge failed: `{type(e).__name__}: {e}`")
+                except Exception:
+                    pass
 
         # ══════════════════════════════════════════════════════════
         # STOP ALL
